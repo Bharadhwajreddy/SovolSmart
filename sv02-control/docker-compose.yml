@@ -1,0 +1,17 @@
+services:
+  sv02-control:
+    build: .
+    container_name: sv02-control
+    restart: unless-stopped
+
+    # Host networking so the container can reach OctoPrint on localhost and
+    # your phone's camera on the LAN without extra bridge configuration.
+    # On host networking the published port comes from PORT in .env.
+    network_mode: host
+
+    env_file:
+      - .env
+
+    volumes:
+      # Keeps the anomaly log across container rebuilds.
+      - ./data:/app/data

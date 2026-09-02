@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#14161a">
+<title>SV02 Control</title>
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🖨️</text></svg>">
+</head>
+<body>
+
+<!-- Login ---------------------------------------------------------------->
+<section id="login-screen" class="login" hidden>
+  <form id="login-form" class="login-card">
+    <h1>SV02 Control</h1>
+    <p class="muted">Sign in to reach the printer.</p>
+    <input id="password" type="password" placeholder="Password" autocomplete="current-password" required>
+    <button type="submit" id="login-button">Sign in</button>
+    <p id="login-error" class="error" hidden></p>
+  </form>
+</section>
+
+<!-- Dashboard ------------------------------------------------------------->
+<main id="dashboard" hidden>
+
+  <header class="topbar">
+    <div class="brand">
+      <span id="state-dot" class="dot"></span>
+      <div>
+        <strong>Sovol SV02</strong>
+        <span id="state-label" class="state-label">Connecting…</span>
+      </div>
+    </div>
+    <button id="logout" class="ghost" type="button">Sign out</button>
+  </header>
+
+  <div id="banners" class="banners"></div>
+
+  <!-- Camera is the centrepiece -->
+  <section class="camera-panel">
+    <div class="camera-frame">
+      <img id="camera" alt="Live view of the printer">
+      <div id="camera-overlay" class="camera-overlay">
+        <span class="spinner"></span>
+        <p id="camera-message">Connecting to camera…</p>
+        <button id="camera-retry" class="ghost small" type="button" hidden>Retry now</button>
+      </div>
+      <div class="camera-badge"><span class="pulse"></span> LIVE</div>
+    </div>
+  </section>
+
+  <!-- Progress -->
+  <section class="card" id="progress-card">
+    <div class="row between">
+      <h2 id="job-file">No job loaded</h2>
+      <span id="job-percent" class="percent">—</span>
+    </div>
+    <div class="progress"><div id="progress-fill" class="progress-fill"></div></div>
+    <div class="row between muted small">
+      <span id="job-elapsed">Elapsed —</span>
+      <span id="job-remaining">Remaining —</span>
+    </div>
+  </section>
+
+  <!-- Temperatures. Cards are built from whatever heaters the printer
+       reports, so a dual-extruder SV02 shows both nozzles automatically. -->
+  <section class="grid-2" id="temps"></section>
+
+  <!-- Controls -->
+  <section class="card">
+    <h3>Controls</h3>
+    <div class="controls">
+      <button id="btn-pause" class="primary" type="button" disabled>Pause</button>
+      <button id="btn-cancel" class="danger" type="button" disabled>Cancel print</button>
+      <button id="btn-estop" class="estop" type="button">Emergency stop</button>
+    </div>
+    <p class="muted small">Emergency stop sends M112. The printer halts instantly and needs a reconnect or power cycle afterwards.</p>
+    <button id="btn-reconnect" class="ghost small" type="button" hidden>Reconnect printer</button>
+  </section>
+
+  <!-- Maintenance -->
+  <section class="card">
+    <h3>Maintenance</h3>
+    <div id="maintenance" class="maintenance"></div>
+    <p class="muted small">Auto bed level runs G28 then G29, and only does anything once a probe such as a BLTouch is fitted.</p>
+  </section>
+
+  <!-- Stored files -->
+  <section class="card">
+    <div class="row between">
+      <h3>On the printer</h3>
+      <button id="refresh-files" class="ghost small" type="button">Refresh</button>
+    </div>
+    <ul id="file-list" class="files"><li class="muted small">Loading…</li></ul>
+  </section>
+
+  <!-- Upload -->
+  <section class="card">
+    <h3>Upload G-code</h3>
+    <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Choose or drop a G-code file">
+      <p><strong>Drop a .gcode file here</strong></p>
+      <p class="muted small">or tap to choose one</p>
+      <input id="file-input" type="file" accept=".gcode,.gco,.g" hidden>
+    </div>
+    <div id="file-chosen" class="file-chosen" hidden>
+      <span id="file-name"></span>
+      <button id="file-clear" class="ghost small" type="button">Clear</button>
+    </div>
+    <label class="checkbox">
+      <input id="start-now" type="checkbox" checked>
+      Start printing immediately after upload
+    </label>
+    <button id="btn-upload" class="primary" type="button" disabled>Upload</button>
+    <div id="upload-progress" class="progress thin" hidden><div id="upload-fill" class="progress-fill"></div></div>
+    <p id="upload-status" class="small" hidden></p>
+  </section>
+
+  <!-- Log -->
+  <section class="card">
+    <div class="row between">
+      <h3>Recent events</h3>
+      <button id="refresh-events" class="ghost small" type="button">Refresh</button>
+    </div>
+    <ul id="event-list" class="events"><li class="muted small">Loading…</li></ul>
+  </section>
+
+  <footer class="muted small center">
+    <span id="footer-info">Polling…</span>
+  </footer>
+</main>
+
+<!-- Confirmation dialog ---------------------------------------------------->
+<dialog id="confirm-dialog" class="confirm">
+  <h3 id="confirm-title">Are you sure?</h3>
+  <p id="confirm-body"></p>
+  <div class="confirm-actions">
+    <button id="confirm-no" class="ghost" type="button">Keep printing</button>
+    <button id="confirm-yes" class="danger" type="button">Confirm</button>
+  </div>
+</dialog>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

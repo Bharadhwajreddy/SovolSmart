@@ -1,0 +1,39 @@
+[Unit]
+Description=SV02 Control — remote monitoring and control for the Sovol SV02
+Documentation=https://github.com/Bharadhwajreddy/SovolSmart
+# Start after the network is genuinely usable, and after OctoPrint if it is
+# on this same machine. Wants= (not Requires=) so this app still starts and
+# shows the "printer offline" state when OctoPrint is down.
+After=network-online.target octoprint.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Change these two if you did not follow the README's paths, or if your
+# username is not "pi" (on a ThinkPad running Ubuntu it is usually your
+# own login name).
+User=pi
+WorkingDirectory=/home/pi/sv02-control
+
+ExecStart=/usr/bin/node server/index.js
+
+# Restart forever, but back off so a bad .env doesn't spin the CPU.
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=0
+
+# Logs go to the journal: view them with
+#   journalctl -u sv02-control -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sv02-control
+
+# Light hardening. The app only ever needs to write its own data/ directory.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=false
+
+[Install]
+WantedBy=multi-user.target

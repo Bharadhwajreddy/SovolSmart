@@ -1,0 +1,21 @@
+{
+  "name": "sovol-sv02-control",
+  "version": "1.0.0",
+  "description": "Remote monitoring and control web app for a Sovol SV02 running OctoPrint",
+  "type": "module",
+  "main": "server/index.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "test": "node test/run.mjs",
+    "check": "node scripts/check.mjs"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "multer": "^1.4.5-lts.1"
+  },
+  "license": "MIT"
+}

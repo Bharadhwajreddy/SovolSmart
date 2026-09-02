@@ -1,0 +1,111 @@
+From 8fe62584e2ac0906c3c4d2e310588480893a42a2 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 27 Aug 2026 23:22:45 +0000
+Subject: [PATCH] Document a no-hardware trial and the alternatives to a
+ Raspberry Pi
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Adds a section for running the whole dashboard against the bundled mock
+printer and camera, so the interface can be evaluated before buying anything.
+Verified end to end: npm run check passes against the mocks and the app serves
+the real dashboard.
+
+Also records the two genuine alternatives to a Pi, with their limits stated
+rather than implied: Octo4a on a spare Android phone (real OctoPrint, but
+charging and USB OTG conflict on some handsets), and the MKS WiFi module the
+SV02's Robin Nano board accepts (wireless file transfer only — it replaces the
+SD card, not the computer, so it cannot provide the camera, alerts or this
+app).
+---
+ printer/docs/first-time-setup.md | 66 ++++++++++++++++++++++++++++++++
+ 1 file changed, 66 insertions(+)
+
+diff --git a/printer/docs/first-time-setup.md b/printer/docs/first-time-setup.md
+index a381e14..091dc3b 100644
+--- a/printer/docs/first-time-setup.md
++++ b/printer/docs/first-time-setup.md
+@@ -20,6 +20,49 @@ skip that, nothing else will work.
+ 
+ ---
+ 
++## Try it right now, with no hardware at all
++
++Before buying anything, you can run the whole dashboard on your own computer
++against a **simulated printer**. Nothing is connected; nothing can be damaged.
++It is the real app, not a mock-up — the same code that will run on the Pi.
++
++You need Node.js 18+ ([nodejs.org](https://nodejs.org)) and Git. Then:
++
++```bash
++git clone https://github.com/vallabh2504/LifeOS.git
++cd LifeOS && git checkout claude/sovol-sv02-web-app-6sb940 && cd printer
++npm install
++```
++
++Create a `.env` file with these six lines:
++
++```
++OCTOPRINT_URL=http://localhost:5099
++OCTOPRINT_API_KEY=demo-key
++APP_PASSWORD=printer123
++PHONE_CAMERA_URL=http://localhost:5098
++SESSION_SECRET=demo-secret-abcdef0123456789abcdef01
++TRUST_PROXY_HTTPS=false
++```
++
++Then start the fake printer and fake camera, and run the app:
++
++```bash
++node test/mocks/octoprint.mjs &
++node test/mocks/camera.mjs &
++npm start
++```
++
++Open **http://localhost:8088** and log in with `printer123`. You will see a
++dual-extruder printer mid-print, and every button works. Stop it all with
++`ctrl+c` and by closing the terminal.
++
++This is worth doing first. It tells you whether you like the interface before
++you spend anything, and it means that when you do set up real hardware, you
++already know what "working" looks like.
++
++---
++
+ ## Step 0 — Decide which computer
+ 
+ Something has to stay powered on next to the printer, connected by USB.
+@@ -35,6 +78,29 @@ open or sleep disabled, and installing OctoPrint on it is more work than
+ flashing a card. Use one if it is what you have, or to try things out before
+ buying a Pi.
+ 
++**An old Android phone also works**, via an app called
++[Octo4a](https://github.com/feelfreelinux/octo4a). It runs a real OctoPrint on
++the phone, connected to the printer with a USB OTG adapter, without rooting it.
++If you have a spare phone in a drawer this costs almost nothing. Two caveats:
++some phones cannot charge and use USB OTG at the same time, which matters for
++something meant to run for days, and it is a smaller community than OctoPi, so
++there is less help when something breaks.
++
++### What if you want no extra computer at all?
++
++Your SV02's mainboard is an MKS Robin Nano, which accepts an
++[MKS WiFi module](https://github.com/makerbase-mks/MKS-WIFI) — a small ESP8266
++board, around the price of a coffee, that plugs onto the board's WiFi header
++and lets you send files over WiFi from a browser or phone app.
++
++Be clear about what that does and does not get you. It gives you wireless file
++transfer and basic control. It does **not** run OctoPrint, so it does not give
++you the camera, the temperature alerts, the auto-pause, the notifications, or
++this app — all of which need a real computer running real software. There is
++no version of "smart printer with a camera and failure detection" that does not
++involve some small computer next to the printer. The WiFi module replaces the
++SD card; it does not replace the Pi.
++
+ Pick one and follow the matching section in Step 2.
+ 
+ ---
+-- 
+2.43.0
+
