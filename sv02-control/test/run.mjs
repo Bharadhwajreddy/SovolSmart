@@ -267,6 +267,107 @@ try {
     assert.match(body.error, /not safe/);
   });
 
+  console.log('\nMotion and tuning');
+
+  /** Last G-code batch the server actually sent to the printer. */
+  const lastGcode = () =>
+    octoMock.received.filter((r) => r.path === '/api/printer/command').at(-1).body.commands;
+
+  await test('jogging wraps the move in relative mode and returns to absolute', async () => {
+    octoMock.setMode('idle');
+    await waitForState('idle');
+    const { status } = await post('/api/control/jog', { axis: 'x', distance: 10 });
+    assert.equal(status, 200);
+    // Leaving the firmware in G91 would silently corrupt the next print.
+    assert.deepEqual(lastGcode(), ['G91', 'G0 X10 F3000', 'G90']);
+  });
+
+  await test('a jog distance beyond the limit is clamped, not sent raw', async () => {
+    await post('/api/control/jog', { axis: 'z', distance: 99999 });
+    assert.deepEqual(lastGcode(), ['G91', 'G0 Z100 F600', 'G90']);
+  });
+
+  await test('an unknown jog axis is refused', async () => {
+    const { status } = await post('/api/control/jog', { axis: 'a', distance: 1 });
+    assert.equal(status, 400);
+  });
+
+  await test('homing named axes sends only those axes', async () => {
+    await post('/api/control/home', { axes: ['x', 'y'] });
+    assert.deepEqual(lastGcode(), ['G28 X Y']);
+  });
+
+  await test('homing with no axes homes everything', async () => {
+    await post('/api/control/home', { axes: [] });
+    assert.deepEqual(lastGcode(), ['G28']);
+  });
+
+  await test('extruding is refused while the nozzle is cold', async () => {
+    // tool1 sits at room temperature in the mock.
+    const { status, body } = await post('/api/control/extrude', { tool: 'tool1', amount: 10 });
+    assert.equal(status, 409);
+    assert.match(body.error, /170/);
+  });
+
+  await test('extruding on a hot nozzle selects the tool first', async () => {
+    const { status } = await post('/api/control/extrude', { tool: 'tool0', amount: 5 });
+    assert.equal(status, 200);
+    assert.deepEqual(lastGcode(), ['T0', 'G91', 'G1 E5 F300', 'G90']);
+  });
+
+  await test('the fan converts percent to PWM, and zero turns it off', async () => {
+    await post('/api/control/fan', { percent: 100 });
+    assert.deepEqual(lastGcode(), ['M106 S255']);
+    await post('/api/control/fan', { percent: 0 });
+    assert.deepEqual(lastGcode(), ['M107']);
+  });
+
+  await test('feedrate and flow are clamped to safe ranges', async () => {
+    await post('/api/control/feedrate', { percent: 9999 });
+    assert.deepEqual(lastGcode(), ['M220 S300']);
+    await post('/api/control/flow', { percent: 0 });
+    assert.deepEqual(lastGcode(), ['M221 S50']);
+  });
+
+  await test('a babystep larger than half a millimetre is clamped', async () => {
+    await post('/api/control/babystep', { delta: 5 });
+    assert.deepEqual(lastGcode(), ['M290 Z0.5']);
+  });
+
+  await test('temperature history is recorded for the chart', async () => {
+    const { status, body } = await call('/api/history?limit=10');
+    assert.equal(status, 200);
+    assert.ok(Array.isArray(body.samples) && body.samples.length > 0, 'expected samples');
+    assert.ok(Number.isFinite(body.samples.at(-1).t), 'each sample needs a timestamp');
+    assert.ok(body.samples.at(-1).tool0, 'expected a tool0 series');
+  });
+
+  await test('motion is refused while a print is running', async () => {
+    octoMock.setMode('printing');
+    await waitForState('printing');
+    for (const [path, payload] of [
+      ['/api/control/jog', { axis: 'x', distance: 1 }],
+      ['/api/control/home', { axes: ['z'] }],
+      ['/api/control/extrude', { tool: 'tool0', amount: 1 }],
+    ]) {
+      const { status } = await post(path, payload);
+      assert.equal(status, 409, `${path} must be refused mid-print`);
+    }
+  });
+
+  await test('tuning IS allowed while printing', async () => {
+    // Adjusting speed, flow and fan mid-print is the whole point of having them.
+    for (const [path, payload] of [
+      ['/api/control/fan', { percent: 50 }],
+      ['/api/control/feedrate', { percent: 120 }],
+      ['/api/control/flow', { percent: 95 }],
+      ['/api/control/babystep', { delta: -0.05 }],
+    ]) {
+      const { status } = await post(path, payload);
+      assert.equal(status, 200, `${path} must work mid-print`);
+    }
+  });
+
   console.log('\nStored files');
 
   await test('files are listed, including inside folders', async () => {

@@ -3,6 +3,7 @@
   'use strict';
 
   const $ = (id) => document.getElementById(id);
+  const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
   const el = {
     loginScreen: $('login-screen'),
@@ -14,6 +15,7 @@
     dashboard: $('dashboard'),
     logout: $('logout'),
     banners: $('banners'),
+    clock: $('clock'),
 
     stateDot: $('state-dot'),
     stateLabel: $('state-label'),
@@ -22,8 +24,10 @@
     cameraOverlay: $('camera-overlay'),
     cameraMessage: $('camera-message'),
     cameraRetry: $('camera-retry'),
+    cameraExpand: $('camera-expand'),
     cameraBadge: document.querySelector('.camera-badge'),
     cameraSpinner: document.querySelector('.camera-overlay .spinner'),
+    cameraFrame: document.querySelector('.camera-frame'),
 
     jobFile: $('job-file'),
     jobPercent: $('job-percent'),
@@ -32,6 +36,10 @@
     jobRemaining: $('job-remaining'),
 
     temps: $('temps'),
+    chart: $('temp-chart'),
+    chartLegend: $('chart-legend'),
+    chartNote: $('chart-note'),
+
     maintenance: $('maintenance'),
     fileList: $('file-list'),
     refreshFiles: $('refresh-files'),
@@ -40,6 +48,21 @@
     btnCancel: $('btn-cancel'),
     btnEstop: $('btn-estop'),
     btnReconnect: $('btn-reconnect'),
+
+    jogSteps: $('jog-steps'),
+    homeAll: $('home-all'),
+    motorsOff: $('motors-off'),
+    extrudeTool: $('extrude-tool'),
+    extrudeAmount: $('extrude-amount'),
+    btnExtrude: $('btn-extrude'),
+    btnRetract: $('btn-retract'),
+
+    fanSlider: $('fan-slider'),
+    fanValue: $('fan-value'),
+    feedSlider: $('feed-slider'),
+    feedValue: $('feed-value'),
+    flowSlider: $('flow-slider'),
+    flowValue: $('flow-value'),
 
     dropzone: $('dropzone'),
     fileInput: $('file-input'),
@@ -73,6 +96,9 @@
     pollTimer: null,
     consecutiveFailures: 0,
     dismissedBanners: new Set(),
+    jogStep: 1,
+    history: [],
+    activeTab: 'temps',
   };
 
   // --- Small helpers -------------------------------------------------------
@@ -121,6 +147,14 @@
     return data;
   }
 
+  /** POST JSON, the shape almost every control uses. */
+  const post = (path, body) =>
+    api(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    });
+
   function banner(id, kind, message) {
     if (state.dismissedBanners.has(id)) return;
     if (el.banners.querySelector(`[data-id="${id}"]`)) return;
@@ -161,6 +195,38 @@
       el.confirmDialog.addEventListener('cancel', onNo);
       el.confirmDialog.showModal();
     });
+  }
+
+  async function withBusy(button, label, fn) {
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = label;
+    try {
+      await fn();
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      button.textContent = original;
+      button.disabled = false;
+      poll();
+    }
+  }
+
+  // --- Tabs ----------------------------------------------------------------
+
+  function wireTabs() {
+    for (const tab of $$('.tab')) {
+      tab.addEventListener('click', () => {
+        state.activeTab = tab.dataset.tab;
+        for (const t of $$('.tab')) t.classList.toggle('active', t === tab);
+        for (const p of $$('.panel')) p.classList.toggle('active', p.dataset.panel === state.activeTab);
+        // The canvas has no size while its panel is display:none, so it must be
+        // redrawn once the panel is actually visible.
+        if (state.activeTab === 'temps') drawChart();
+        if (state.activeTab === 'files') loadFiles();
+        if (state.activeTab === 'log') loadEvents();
+      });
+    }
   }
 
   // --- Camera --------------------------------------------------------------
@@ -292,6 +358,10 @@
       camera.attempts = 0;
       startStream();
     });
+    el.cameraExpand.addEventListener('click', () => {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else el.cameraFrame.requestFullscreen?.();
+    });
 
     // A backgrounded tab has its stream torn down by the browser; pick it back
     // up on return instead of showing a frozen frame.
@@ -321,11 +391,9 @@
   function render(snap) {
     state.snapshot = snap;
 
-    // State indicator
     el.stateDot.className = `dot ${snap.state}`;
     el.stateLabel.textContent = STATE_LABELS[snap.state] || snap.state;
 
-    // Offline banner
     if (snap.state === 'offline') {
       banner('offline', 'danger', snap.offlineReason || 'The printer is not reachable.');
     } else {
@@ -333,7 +401,6 @@
       state.dismissedBanners.delete('offline');
     }
 
-    // Job
     const job = snap.job || {};
     el.jobFile.textContent = job.file || 'No job loaded';
     el.jobFile.title = job.file || '';
@@ -341,28 +408,26 @@
     const pct = Number.isFinite(job.completion) ? job.completion : null;
     el.jobPercent.textContent = pct === null ? '—' : `${pct.toFixed(1)}%`;
     el.progressFill.style.width = `${pct === null ? 0 : Math.max(0, Math.min(100, pct))}%`;
-    el.jobElapsed.textContent = `Elapsed ${job.printTimeText || '—'}`;
-    el.jobRemaining.textContent = `Remaining ${job.printTimeLeftText || '—'}`;
+    el.jobElapsed.textContent = job.printTimeText ? `${job.printTimeText} elapsed` : '—';
+    el.jobRemaining.textContent = job.printTimeLeftText ? `${job.printTimeLeftText} left` : '—';
 
     renderSensors(snap.sensors || []);
+    syncExtruderOptions(snap.sensors || []);
 
-    // Controls
     const printing = snap.state === 'printing';
     const paused = snap.state === 'paused';
     const active = printing || paused;
 
     el.btnPause.disabled = !active;
     el.btnPause.textContent = paused ? 'Resume' : 'Pause';
-    el.btnPause.classList.toggle('primary', true);
     el.btnCancel.disabled = !active;
     el.btnReconnect.hidden = !(snap.state === 'offline' || snap.state === 'error');
 
-    // Upload button
     el.btnUpload.disabled = !state.pendingFile;
 
-    // Footer
     const stamp = snap.updatedAt ? new Date(snap.updatedAt).toLocaleTimeString() : '—';
     el.footerInfo.textContent = `Last update ${stamp}`;
+    el.clock.textContent = stamp;
   }
 
   /**
@@ -389,12 +454,12 @@
         card.innerHTML = `
           <div class="row between">
             <h3></h3>
-            <span class="temp-target">→ —</span>
+            <span class="temp-target">off</span>
           </div>
           <div class="temp-value"><span class="temp-actual">—</span><small>°C</small></div>
           <div class="temp-bar"><div class="temp-bar-fill"></div></div>
           <div class="temp-set">
-            <input type="number" min="0" max="${sensor.max}" step="5" placeholder="°C" inputmode="numeric">
+            <input type="number" min="0" max="${sensor.max}" step="5" placeholder="target °C" inputmode="numeric">
             <button class="ghost small set-temp" type="button">Set</button>
             <button class="ghost small set-temp" data-value="0" type="button">Off</button>
           </div>`;
@@ -404,16 +469,12 @@
           button.addEventListener('click', () => {
             const input = card.querySelector('input');
             const value = button.dataset.value !== undefined ? Number(button.dataset.value) : Number(input.value);
-            if (!Number.isFinite(value) || input.value === '' && button.dataset.value === undefined) {
+            if (!Number.isFinite(value) || (input.value === '' && button.dataset.value === undefined)) {
               toast('Enter a temperature first.', 'error');
               return;
             }
             withBusy(button, '…', async () => {
-              await api('/api/control/temperature', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ target: sensor.key, value }),
-              });
+              await post('/api/control/temperature', { target: sensor.key, value });
               toast(`${sensor.label} set to ${value}°C.`, 'ok');
               input.value = '';
             });
@@ -430,12 +491,172 @@
 
       card.querySelector('.temp-actual').textContent = fmtTemp(sensor.actual);
       card.querySelector('.temp-target').textContent =
-        Number.isFinite(sensor.target) && sensor.target > 0 ? `→ ${sensor.target.toFixed(0)}°C` : 'off';
+        Number.isFinite(sensor.target) && sensor.target > 0 ? `target ${sensor.target.toFixed(0)}°C` : 'off';
       card.querySelector('.temp-bar-fill').style.width =
         `${Number.isFinite(sensor.actual) ? Math.max(0, Math.min(100, (sensor.actual / sensor.max) * 100)) : 0}%`;
 
-      // Highlighted while a deviation is being timed, before it becomes an alert.
-      card.classList.toggle('anomaly', Boolean(sensor.deviatingSince));
+      // Highlighted while a deviation is being timed, red once it has fired.
+      card.classList.toggle('anomaly', Boolean(sensor.deviatingSince) && !sensor.alerting);
+      card.classList.toggle('alerting', Boolean(sensor.alerting));
+    }
+  }
+
+  /** Keep the extruder picker in step with whatever hotends actually exist. */
+  function syncExtruderOptions(sensors) {
+    const tools = sensors.filter((s) => s.kind === 'tool');
+    const signature = tools.map((t) => t.key).join(',');
+    if (signature === syncExtruderOptions.signature) return;
+    syncExtruderOptions.signature = signature;
+
+    el.extrudeTool.innerHTML = '';
+    for (const tool of tools) {
+      const option = document.createElement('option');
+      option.value = tool.key;
+      option.textContent = tool.label;
+      el.extrudeTool.appendChild(option);
+    }
+  }
+
+  // --- Temperature chart ---------------------------------------------------
+  //
+  // Hand-drawn on a canvas rather than pulling in a charting library: it is
+  // about eighty lines, and a Pi serving a phone over a tunnel does not need
+  // to ship 200 KB of JavaScript to draw three lines.
+
+  const SERIES_COLOURS = ['#ff6b4a', '#ffc14a', '#4a9eff', '#3ecf8e', '#b47aff'];
+
+  function seriesColour(key, index) {
+    if (key === 'bed') return '#4a9eff';
+    return SERIES_COLOURS[index % SERIES_COLOURS.length];
+  }
+
+  async function loadHistory() {
+    try {
+      const { samples } = await api('/api/history?limit=720');
+      state.history = samples || [];
+      drawChart();
+    } catch {
+      /* the chart is not important enough to surface an error for */
+    }
+  }
+
+  function drawChart() {
+    const canvas = el.chart;
+    if (!canvas || canvas.offsetParent === null) return;   // panel is hidden
+
+    const ctx = canvas.getContext('2d');
+    const ratio = window.devicePixelRatio || 1;
+    const width = canvas.clientWidth;
+    const height = 180;
+
+    canvas.width = width * ratio;
+    canvas.height = height * ratio;
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+
+    const samples = state.history;
+    if (samples.length < 2) {
+      el.chartNote.textContent = 'Collecting data…';
+      el.chartNote.hidden = false;
+      return;
+    }
+    el.chartNote.hidden = true;
+
+    const keys = [...new Set(samples.flatMap((s) => Object.keys(s).filter((k) => k !== 't')))].sort((a, b) => {
+      if (a === 'bed') return 1;
+      if (b === 'bed') return -1;
+      return a.localeCompare(b, undefined, { numeric: true });
+    });
+
+    // Y range from the data, padded, with a sane floor so a cold printer does
+    // not render as a jagged line across a 2-degree window.
+    let max = 0;
+    for (const s of samples) {
+      for (const k of keys) {
+        const v = s[k];
+        if (v) {
+          if (Number.isFinite(v.a)) max = Math.max(max, v.a);
+          if (Number.isFinite(v.g)) max = Math.max(max, v.g);
+        }
+      }
+    }
+    const yMax = Math.max(60, Math.ceil((max * 1.15) / 20) * 20);
+    const pad = { l: 34, r: 8, t: 8, b: 18 };
+    const plotW = width - pad.l - pad.r;
+    const plotH = height - pad.t - pad.b;
+
+    const x = (i) => pad.l + (i / (samples.length - 1)) * plotW;
+    const y = (v) => pad.t + plotH - (Math.max(0, Math.min(yMax, v)) / yMax) * plotH;
+
+    // Grid + axis labels
+    ctx.strokeStyle = '#262d39';
+    ctx.fillStyle = '#8b94a7';
+    ctx.lineWidth = 1;
+    ctx.font = '10px ui-monospace, monospace';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    for (let i = 0; i <= 4; i++) {
+      const value = (yMax / 4) * i;
+      const yy = Math.round(y(value)) + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(pad.l, yy);
+      ctx.lineTo(width - pad.r, yy);
+      ctx.stroke();
+      ctx.fillText(String(Math.round(value)), pad.l - 6, yy);
+    }
+
+    // Time span label
+    const spanMin = Math.round((samples[samples.length - 1].t - samples[0].t) / 60000);
+    ctx.textAlign = 'left';
+    ctx.fillText(`${spanMin} min`, pad.l, height - 8);
+
+    keys.forEach((key, index) => {
+      const colour = seriesColour(key, index);
+
+      // Target, as a faint dashed line.
+      ctx.beginPath();
+      ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = colour + '66';
+      ctx.lineWidth = 1;
+      let started = false;
+      samples.forEach((s, i) => {
+        const v = s[key];
+        if (!v || !Number.isFinite(v.g) || v.g <= 0) { started = false; return; }
+        if (!started) { ctx.moveTo(x(i), y(v.g)); started = true; }
+        else ctx.lineTo(x(i), y(v.g));
+      });
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Actual, solid.
+      ctx.beginPath();
+      ctx.strokeStyle = colour;
+      ctx.lineWidth = 1.8;
+      ctx.lineJoin = 'round';
+      started = false;
+      samples.forEach((s, i) => {
+        const v = s[key];
+        if (!v || !Number.isFinite(v.a)) { started = false; return; }
+        if (!started) { ctx.moveTo(x(i), y(v.a)); started = true; }
+        else ctx.lineTo(x(i), y(v.a));
+      });
+      ctx.stroke();
+    });
+
+    // Legend, rebuilt only when the set of series changes.
+    const legendSig = keys.join(',');
+    if (legendSig !== drawChart.legendSig) {
+      drawChart.legendSig = legendSig;
+      el.chartLegend.innerHTML = '';
+      const labels = Object.fromEntries((state.snapshot?.sensors || []).map((s) => [s.key, s.label]));
+      keys.forEach((key, index) => {
+        const item = document.createElement('span');
+        item.className = 'legend-item';
+        item.innerHTML = '<span class="legend-swatch"></span><span></span>';
+        item.querySelector('.legend-swatch').style.background = seriesColour(key, index);
+        item.querySelector('span:last-child').textContent = labels[key] || key;
+        el.chartLegend.appendChild(item);
+      });
     }
   }
 
@@ -447,6 +668,15 @@
       state.consecutiveFailures = 0;
       clearBanner('server-lost');
       render(snap);
+
+      // Append to the local history so the chart moves between full reloads.
+      const sample = { t: Date.now() };
+      for (const sensor of snap.sensors || []) {
+        sample[sensor.key] = { a: sensor.actual, g: sensor.target };
+      }
+      state.history.push(sample);
+      if (state.history.length > 720) state.history.shift();
+      if (state.activeTab === 'temps') drawChart();
     } catch (err) {
       state.consecutiveFailures += 1;
       // One blip on a phone connection is normal; three in a row is not.
@@ -473,7 +703,7 @@
 
   async function loadEvents() {
     try {
-      const { events } = await api('/api/events?limit=40');
+      const { events } = await api('/api/events?limit=60');
       el.eventList.innerHTML = '';
 
       if (!events.length) {
@@ -496,32 +726,13 @@
     }
   }
 
-  // --- Controls ------------------------------------------------------------
-
-  async function withBusy(button, label, fn) {
-    const original = button.textContent;
-    button.disabled = true;
-    button.textContent = label;
-    try {
-      await fn();
-    } catch (err) {
-      toast(err.message, 'error');
-    } finally {
-      button.textContent = original;
-      button.disabled = false;
-      poll();
-    }
-  }
+  // --- Print controls ------------------------------------------------------
 
   function wireControls() {
     el.btnPause.addEventListener('click', () => {
       const action = state.snapshot?.state === 'paused' ? 'resume' : 'pause';
       withBusy(el.btnPause, action === 'pause' ? 'Pausing…' : 'Resuming…', async () => {
-        await api('/api/control/pause', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action }),
-        });
+        await post('/api/control/pause', { action });
         toast(action === 'pause' ? 'Print paused.' : 'Print resumed.', 'ok');
       });
     });
@@ -537,7 +748,7 @@
       if (!ok) return;
 
       withBusy(el.btnCancel, 'Cancelling…', async () => {
-        await api('/api/control/cancel', { method: 'POST' });
+        await post('/api/control/cancel');
         toast('Print cancelled.', 'ok');
       });
     });
@@ -551,8 +762,8 @@
       });
       if (!ok) return;
 
-      withBusy(el.btnEstop, 'Stopping…', async () => {
-        const result = await api('/api/control/emergency-stop', { method: 'POST' });
+      withBusy(el.btnEstop, '…', async () => {
+        const result = await post('/api/control/emergency-stop');
         toast(result?.message || 'Emergency stop sent.', 'error');
         banner('estop', 'danger', 'Emergency stop sent. Power-cycle the printer, then press Reconnect.');
       });
@@ -560,12 +771,128 @@
 
     el.btnReconnect.addEventListener('click', () => {
       withBusy(el.btnReconnect, 'Reconnecting…', async () => {
-        await api('/api/control/reconnect', { method: 'POST' });
+        await post('/api/control/reconnect');
         toast('Reconnect requested.', 'ok');
         clearBanner('estop');
       });
     });
+  }
 
+  // --- Move ----------------------------------------------------------------
+
+  function wireMove() {
+    for (const button of el.jogSteps.querySelectorAll('.step')) {
+      button.addEventListener('click', () => {
+        state.jogStep = Number(button.dataset.step);
+        for (const b of el.jogSteps.querySelectorAll('.step')) b.classList.toggle('active', b === button);
+      });
+    }
+
+    for (const button of $$('.jog[data-axis]')) {
+      button.addEventListener('click', () => {
+        const axis = button.dataset.axis;
+        const distance = state.jogStep * Number(button.dataset.dir);
+        withBusy(button, '·', async () => {
+          await post('/api/control/jog', { axis, distance });
+        });
+      });
+    }
+
+    for (const button of $$('.jog[data-home]')) {
+      button.addEventListener('click', () => {
+        const axes = button.dataset.home.split(',');
+        withBusy(button, '·', async () => {
+          await post('/api/control/home', { axes });
+          toast(`Homing ${axes.join(' and ').toUpperCase()}.`, 'ok');
+        });
+      });
+    }
+
+    el.homeAll.addEventListener('click', async () => {
+      const ok = await confirmAction({
+        title: 'Home all axes?',
+        body: 'The toolhead will move to the origin. Make sure nothing is in the way.',
+        confirmLabel: 'Home',
+      });
+      if (!ok) return;
+      withBusy(el.homeAll, 'Homing…', async () => {
+        await post('/api/control/home', { axes: [] });
+        toast('Homing all axes.', 'ok');
+      });
+    });
+
+    el.motorsOff.addEventListener('click', () => {
+      withBusy(el.motorsOff, '…', async () => {
+        await post('/api/control/command', { id: 'motorsOff' });
+        toast('Motors released.', 'ok');
+      });
+    });
+
+    const move = (sign) => {
+      const amount = Number(el.extrudeAmount.value) * sign;
+      const tool = el.extrudeTool.value || 'tool0';
+      const button = sign > 0 ? el.btnExtrude : el.btnRetract;
+      if (!Number.isFinite(amount) || amount === 0) {
+        toast('Enter an amount in millimetres.', 'error');
+        return;
+      }
+      withBusy(button, '…', async () => {
+        await post('/api/control/extrude', { tool, amount });
+        toast(`${sign > 0 ? 'Extruded' : 'Retracted'} ${Math.abs(amount)}mm.`, 'ok');
+      });
+    };
+    el.btnExtrude.addEventListener('click', () => move(1));
+    el.btnRetract.addEventListener('click', () => move(-1));
+  }
+
+  // --- Tune ----------------------------------------------------------------
+
+  /** Sliders fire continuously while dragging; only send on release. */
+  function wireSlider(slider, output, format, send) {
+    const show = () => { output.textContent = format(Number(slider.value)); };
+    slider.addEventListener('input', show);
+    slider.addEventListener('change', async () => {
+      try {
+        await send(Number(slider.value));
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    });
+    show();
+  }
+
+  function wireTune() {
+    wireSlider(el.fanSlider, el.fanValue, (v) => `${v}%`, async (percent) => {
+      await post('/api/control/fan', { percent });
+      toast(`Fan ${percent}%.`, 'ok');
+    });
+    for (const button of $$('.preset[data-fan]')) {
+      button.addEventListener('click', () => {
+        el.fanSlider.value = button.dataset.fan;
+        el.fanSlider.dispatchEvent(new Event('input'));
+        el.fanSlider.dispatchEvent(new Event('change'));
+      });
+    }
+
+    wireSlider(el.feedSlider, el.feedValue, (v) => `${v}%`, async (percent) => {
+      await post('/api/control/feedrate', { percent });
+      toast(`Print speed ${percent}%.`, 'ok');
+    });
+
+    wireSlider(el.flowSlider, el.flowValue, (v) => `${v}%`, async (percent) => {
+      await post('/api/control/flow', { percent });
+      toast(`Flow ${percent}%.`, 'ok');
+    });
+
+    for (const button of $$('[data-baby]')) {
+      button.addEventListener('click', () => {
+        const delta = Number(button.dataset.baby);
+        withBusy(button, '…', async () => {
+          await post('/api/control/babystep', { delta });
+          toast(`Z ${delta > 0 ? '+' : ''}${delta}mm.`, 'ok');
+        });
+      });
+    }
   }
 
   // --- Maintenance ---------------------------------------------------------
@@ -580,28 +907,25 @@
 
     el.maintenance.innerHTML = '';
     for (const command of commands) {
+      // Home and release-motors have dedicated controls on the Move tab.
+      if (command.id === 'home' || command.id === 'motorsOff') continue;
+
       const button = document.createElement('button');
-      button.className = 'ghost small';
+      button.className = 'ghost';
       button.textContent = command.label.replace(/ \(.*\)$/, '');
       button.title = command.gcode.join(' ; ');
 
       button.addEventListener('click', async () => {
-        // Homing mid-print would drive the toolhead through the model.
         if (command.blockedWhilePrinting) {
           const ok = await confirmAction({
-            title: button.textContent + '?',
+            title: `${button.textContent}?`,
             body: `This sends ${command.gcode.join(' and ')} to the printer.`,
             confirmLabel: 'Run it',
-            cancelLabel: 'Cancel',
           });
           if (!ok) return;
         }
         withBusy(button, '…', async () => {
-          await api('/api/control/command', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id: command.id }),
-          });
+          await post('/api/control/command', { id: command.id });
           toast(`Sent ${command.gcode.join(', ')}.`, 'ok');
           loadEvents();
         });
@@ -628,7 +952,7 @@
         return;
       }
 
-      for (const file of files.slice(0, 25)) {
+      for (const file of files.slice(0, 40)) {
         const li = document.createElement('li');
 
         const meta = document.createElement('div');
@@ -649,15 +973,10 @@
             title: 'Start this print?',
             body: `${file.name} will be selected and printing will begin straight away. Make sure the bed is clear.`,
             confirmLabel: 'Start printing',
-            cancelLabel: 'Cancel',
           });
           if (!ok) return;
           withBusy(printButton, '…', async () => {
-            await api('/api/files/print', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ path: file.path }),
-            });
+            await post('/api/files/print', { path: file.path });
             toast(`Printing ${file.name}.`, 'ok');
           });
         });
@@ -740,7 +1059,7 @@
     const finish = (message, kind) => {
       el.btnUpload.textContent = 'Upload';
       el.btnUpload.disabled = !state.pendingFile;
-      el.uploadStatus.className = `small ${kind === 'ok' ? '' : 'error'}`;
+      el.uploadStatus.className = `small ${kind === 'ok' ? 'muted' : 'error'}`;
       el.uploadStatus.textContent = message;
       poll();
       loadEvents();
@@ -837,6 +1156,7 @@
 
     initCamera();
     startPolling();
+    loadHistory();
     loadEvents();
     loadMaintenance();
     loadFiles();
@@ -851,11 +1171,7 @@
       el.loginButton.textContent = 'Signing in…';
 
       try {
-        await api('/api/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password: el.password.value }),
-        });
+        await post('/api/login', { password: el.password.value });
         el.password.value = '';
         await showDashboard();
       } catch (err) {
@@ -868,7 +1184,7 @@
     });
 
     el.logout.addEventListener('click', async () => {
-      try { await api('/api/logout', { method: 'POST' }); } catch { /* sign out locally anyway */ }
+      try { await post('/api/logout'); } catch { /* sign out locally anyway */ }
       showLogin();
     });
   }
@@ -877,10 +1193,14 @@
 
   async function boot() {
     wireAuth();
+    wireTabs();
     wireControls();
+    wireMove();
+    wireTune();
     wireUpload();
     el.refreshEvents.addEventListener('click', loadEvents);
     el.refreshFiles.addEventListener('click', loadFiles);
+    window.addEventListener('resize', () => { if (state.activeTab === 'temps') drawChart(); });
 
     try {
       const session = await fetch('/api/session', { credentials: 'same-origin' }).then((r) => r.json());

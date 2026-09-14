@@ -85,10 +85,20 @@ Walk me through **Settings → Application Keys → Generate**, named
 Node 22 here fails or half-installs. Use exactly this:
 
 ```bash
-if [ "$(uname -m)" = "aarch64" ]; then MAJOR=22; else MAJOR=20; fi
-curl -fsSL "https://deb.nodesource.com/setup_${MAJOR}.x" | sudo -E bash -
-sudo apt-get install -y nodejs
+# NodeSource no longer publishes 32-bit ARM (armhf) packages at all -- its
+# setup script exits with "Unsupported architecture: armhf". The standard
+# OctoPi image IS armhf, so use Node's own official tarball instead.
+# Node 20 is the last major line with official linux-armv7l builds.
+if [ "$(uname -m)" = "aarch64" ]; then
+  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs
+else
+  V=v20.20.2
+  curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/$V/node-$V-linux-armv7l.tar.xz"
+  sudo tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1     --exclude CHANGELOG.md --exclude LICENSE --exclude README.md
+  rm /tmp/node.tar.xz
+fi
 node --version
+npm --version
 ```
 
 On this Pi that installs Node 20, which is fine — the app needs 18 or newer.

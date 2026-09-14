@@ -6,7 +6,7 @@ import multer from 'multer';
 import { config, validateConfig, warnings, ROOT } from './config.js';
 import { logEvent, recentEvents, readEventsFromDisk } from './log.js';
 import { handleLogin, handleLogout, requireAuth, isAuthenticated } from './auth.js';
-import { startMonitor, getSnapshot } from './monitor.js';
+import { startMonitor, getSnapshot, getHistory } from './monitor.js';
 import { proxyStream, proxySnapshot } from './camera.js';
 import * as octo from './octoprint.js';
 import { OctoPrintError } from './octoprint.js';
@@ -200,6 +200,167 @@ app.post('/api/control/command', route(async (req, res) => {
   logEvent('info', 'maintenance', `${command.label} (${command.gcode.join(', ')})`);
   return res.json({ ok: true, ran: command.gcode });
 }));
+
+// --- Motion, extrusion and live tuning -------------------------------------
+//
+// These are still an allowlist, not a G-code pass-through: the browser picks a
+// verb and supplies a NUMBER, and the server decides the actual G-code and
+// clamps the number to a safe range. A browser can never say "run this".
+
+/** Clamp to a range, rejecting anything that is not a finite number. */
+function boundedNumber(value, min, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.min(max, Math.max(min, n));
+}
+
+function printingNow() {
+  const state = getSnapshot().state;
+  return state === 'printing' || state === 'paused';
+}
+
+/** Guard for anything that would fight the printer for control of the head. */
+function refuseWhilePrinting(res, what) {
+  if (printingNow()) {
+    res.status(409).json({ error: what + ' is not safe while a print is running.' });
+    return true;
+  }
+  if (getSnapshot().state === 'offline') {
+    res.status(503).json({ error: 'The printer is offline.' });
+    return true;
+  }
+  return false;
+}
+
+// Jog. Relative move, then straight back to absolute — leaving the firmware in
+// relative mode would silently corrupt the next print.
+const JOG_FEEDRATE = { x: 3000, y: 3000, z: 600 };
+
+app.post('/api/control/jog', route(async (req, res) => {
+  const axis = String(req.body?.axis || '').toLowerCase();
+  if (!['x', 'y', 'z'].includes(axis)) {
+    return res.status(400).json({ error: 'axis must be x, y or z.' });
+  }
+  const distance = boundedNumber(req.body?.distance, -100, 100);
+  if (distance === null || distance === 0) {
+    return res.status(400).json({ error: 'distance must be a number between -100 and 100 mm.' });
+  }
+  if (refuseWhilePrinting(res, 'Moving the axes')) return undefined;
+
+  await octo.sendCommand([
+    'G91',
+    'G0 ' + axis.toUpperCase() + distance + ' F' + JOG_FEEDRATE[axis],
+    'G90',
+  ]);
+  logEvent('info', 'jog', 'Jog ' + axis.toUpperCase() + ' ' + (distance > 0 ? '+' : '') + distance + 'mm.');
+  return res.json({ ok: true, axis, distance });
+}));
+
+app.post('/api/control/home', route(async (req, res) => {
+  const raw = Array.isArray(req.body?.axes) ? req.body.axes : [];
+  const axes = raw.map((a) => String(a).toLowerCase()).filter((a) => ['x', 'y', 'z'].includes(a));
+  if (refuseWhilePrinting(res, 'Homing')) return undefined;
+
+  // G28 with no arguments homes everything.
+  const gcode = axes.length ? 'G28 ' + axes.map((a) => a.toUpperCase()).join(' ') : 'G28';
+  await octo.sendCommand(gcode);
+  logEvent('info', 'home', 'Homed ' + (axes.length ? axes.join(', ').toUpperCase() : 'all axes') + '.');
+  return res.json({ ok: true, ran: gcode });
+}));
+
+app.post('/api/control/extrude', route(async (req, res) => {
+  const tool = String(req.body?.tool || 'tool0');
+  if (!/^tool\d+$/.test(tool)) {
+    return res.status(400).json({ error: 'tool must be like "tool0".' });
+  }
+  const amount = boundedNumber(req.body?.amount, -100, 100);
+  if (amount === null || amount === 0) {
+    return res.status(400).json({ error: 'amount must be a number between -100 and 100 mm.' });
+  }
+  if (refuseWhilePrinting(res, 'Extruding')) return undefined;
+
+  // Marlin refuses to extrude below the cold-extrusion threshold, but failing
+  // here with a clear reason beats a silent no-op the user cannot explain.
+  const sensor = getSnapshot().sensors.find((entry) => entry.key === tool);
+  if (sensor && Number.isFinite(sensor.actual) && sensor.actual < 170) {
+    return res.status(409).json({
+      error: sensor.label + ' is only ' + sensor.actual.toFixed(0) + '°C. Heat it to at least 170°C before extruding.',
+    });
+  }
+
+  await octo.sendCommand([
+    'T' + tool.replace('tool', ''),
+    'G91',
+    'G1 E' + amount + ' F300',
+    'G90',
+  ]);
+  logEvent('info', 'extrude', (amount > 0 ? 'Extruded ' : 'Retracted ') + Math.abs(amount) + 'mm on ' + tool + '.');
+  return res.json({ ok: true, tool, amount });
+}));
+
+// Fan, speed and flow are all safe mid-print — tuning them while printing is
+// the whole point of having them.
+app.post('/api/control/fan', route(async (req, res) => {
+  const percent = boundedNumber(req.body?.percent, 0, 100);
+  if (percent === null) {
+    return res.status(400).json({ error: 'percent must be a number between 0 and 100.' });
+  }
+  if (getSnapshot().state === 'offline') {
+    return res.status(503).json({ error: 'The printer is offline.' });
+  }
+  const pwm = Math.round((percent / 100) * 255);
+  await octo.sendCommand(percent === 0 ? 'M107' : 'M106 S' + pwm);
+  logEvent('info', 'fan', 'Part-cooling fan set to ' + percent + '%.');
+  return res.json({ ok: true, percent });
+}));
+
+app.post('/api/control/feedrate', route(async (req, res) => {
+  const percent = boundedNumber(req.body?.percent, 10, 300);
+  if (percent === null) {
+    return res.status(400).json({ error: 'percent must be between 10 and 300.' });
+  }
+  if (getSnapshot().state === 'offline') {
+    return res.status(503).json({ error: 'The printer is offline.' });
+  }
+  await octo.sendCommand('M220 S' + Math.round(percent));
+  logEvent('info', 'feedrate', 'Print speed set to ' + Math.round(percent) + '%.');
+  return res.json({ ok: true, percent: Math.round(percent) });
+}));
+
+app.post('/api/control/flow', route(async (req, res) => {
+  const percent = boundedNumber(req.body?.percent, 50, 150);
+  if (percent === null) {
+    return res.status(400).json({ error: 'percent must be between 50 and 150.' });
+  }
+  if (getSnapshot().state === 'offline') {
+    return res.status(503).json({ error: 'The printer is offline.' });
+  }
+  await octo.sendCommand('M221 S' + Math.round(percent));
+  logEvent('info', 'flow', 'Flow rate set to ' + Math.round(percent) + '%.');
+  return res.json({ ok: true, percent: Math.round(percent) });
+}));
+
+/**
+ * Z babystep. Deliberately tiny bounds: this is for nudging the first layer
+ * while it prints, and a large value here drives the nozzle into the bed.
+ */
+app.post('/api/control/babystep', route(async (req, res) => {
+  const delta = boundedNumber(req.body?.delta, -0.5, 0.5);
+  if (delta === null || delta === 0) {
+    return res.status(400).json({ error: 'delta must be between -0.5 and 0.5 mm.' });
+  }
+  if (getSnapshot().state === 'offline') {
+    return res.status(503).json({ error: 'The printer is offline.' });
+  }
+  await octo.sendCommand('M290 Z' + delta);
+  logEvent('info', 'babystep', 'Z babystep ' + (delta > 0 ? '+' : '') + delta + 'mm.');
+  return res.json({ ok: true, delta });
+}));
+
+app.get('/api/history', (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 720, 720);
+  res.json({ samples: getHistory(limit), pollIntervalMs: config.pollIntervalMs });
+});
 
 // --- Stored files ----------------------------------------------------------
 

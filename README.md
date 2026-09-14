@@ -40,6 +40,7 @@ flowchart LR
 | Fix something that broke | [Documents/05 — Operations & troubleshooting](Documents/05-operations-and-troubleshooting.md) |
 | Touch printer firmware | [Documents/06 — Firmware & hardware](Documents/06-firmware-and-hardware.md) |
 | Know why it was built this way | [Documents/07 — Decision log & future work](Documents/07-decision-log-and-future-work.md) |
+| See what really happened on the hardware | [Documents/08 — Deployment log](Documents/08-deployment-log.md) |
 
 Full documentation index: **[Documents/](Documents/README.md)**
 
@@ -94,14 +95,15 @@ SovolSmart/
 │   ├── 04-application-architecture.md
 │   ├── 05-operations-and-troubleshooting.md
 │   ├── 06-firmware-and-hardware.md
-│   └── 07-decision-log-and-future-work.md
+│   ├── 07-decision-log-and-future-work.md
+│   └── 08-deployment-log.md
 ├── sv02-control/              the application — self-contained, deployable
 │   ├── START-HERE.md          the app's own quick start
 │   ├── SETUP-PROMPT.md        the prompt for driving setup with Claude Code
 │   ├── README.md              full app documentation + config reference
 │   ├── server/                backend: Express, OctoPrint client, poll loop
 │   ├── public/                frontend: plain HTML/CSS/JS, no build step
-│   ├── test/                  37 end-to-end tests + mock printer and camera
+│   ├── test/                  50 end-to-end tests + mock printer and camera
 │   ├── scripts/check.mjs      `npm run check` — the connection diagnostic
 │   ├── demo/                  builds a static, hostable demo
 │   ├── deploy/                systemd unit file
@@ -114,14 +116,18 @@ SovolSmart/
 
 ## Status
 
-The application is **finished and tested** — 37 end-to-end tests, all passing,
+The application is **finished, tested and deployed** — 50 end-to-end tests, all passing,
 covering authentication, dual-extruder sensor handling, pause/resume/cancel,
-`M112`, the G-code allowlist, upload rejection paths, the camera relay,
+`M112`, the G-code allowlist, jog/extrude/fan/speed/flow/babystep bounds and
+their mid-print safety rules, upload rejection paths, the camera relay,
 temperature-anomaly detection and recovery, and OctoPrint dropping out
 mid-print.
 
-This project is a **deployment**, not a build. Current progress is tracked in
-[the roadmap](Documents/02-roadmap.md).
+It is **running on real hardware** — a Pi 3B next to a Sovol SV02, reachable
+over Tailscale and a Cloudflare tunnel. Progress is tracked in
+[the roadmap](Documents/02-roadmap.md); what actually happened during the build,
+including five problems the documentation had wrong, is in
+[the deployment log](Documents/08-deployment-log.md).
 
 ## Safety
 

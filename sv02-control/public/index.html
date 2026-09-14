@@ -3,41 +3,45 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#14161a">
+<meta name="theme-color" content="#0d0f13">
 <title>SV02 Control</title>
 <link rel="stylesheet" href="/styles.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🖨️</text></svg>">
 </head>
 <body>
 
-<!-- Login ---------------------------------------------------------------->
+<!-- Login ----------------------------------------------------------------->
 <section id="login-screen" class="login" hidden>
   <form id="login-form" class="login-card">
+    <div class="login-mark">🖨️</div>
     <h1>SV02 Control</h1>
     <p class="muted">Sign in to reach the printer.</p>
     <input id="password" type="password" placeholder="Password" autocomplete="current-password" required>
-    <button type="submit" id="login-button">Sign in</button>
+    <button type="submit" id="login-button" class="primary block">Sign in</button>
     <p id="login-error" class="error" hidden></p>
   </form>
 </section>
 
-<!-- Dashboard ------------------------------------------------------------->
+<!-- Dashboard -------------------------------------------------------------->
 <main id="dashboard" hidden>
 
   <header class="topbar">
     <div class="brand">
       <span id="state-dot" class="dot"></span>
-      <div>
+      <div class="brand-text">
         <strong>Sovol SV02</strong>
         <span id="state-label" class="state-label">Connecting…</span>
       </div>
     </div>
-    <button id="logout" class="ghost" type="button">Sign out</button>
+    <div class="topbar-actions">
+      <span id="clock" class="muted small mono"></span>
+      <button id="logout" class="ghost small" type="button">Sign out</button>
+    </div>
   </header>
 
   <div id="banners" class="banners"></div>
 
-  <!-- Camera is the centrepiece -->
+  <!-- Camera: always visible, above the tabs -->
   <section class="camera-panel">
     <div class="camera-frame">
       <img id="camera" alt="Live view of the printer">
@@ -47,82 +51,204 @@
         <button id="camera-retry" class="ghost small" type="button" hidden>Retry now</button>
       </div>
       <div class="camera-badge"><span class="pulse"></span> LIVE</div>
+      <button id="camera-expand" class="camera-expand" type="button" title="Fullscreen">⛶</button>
+    </div>
+
+    <!-- Progress strip, welded to the camera -->
+    <div id="progress-strip" class="progress-strip">
+      <div class="row between tight">
+        <span id="job-file" class="job-file">No job loaded</span>
+        <span id="job-percent" class="percent">—</span>
+      </div>
+      <div class="progress"><div id="progress-fill" class="progress-fill"></div></div>
+      <div class="row between tight muted small mono">
+        <span id="job-elapsed">—</span>
+        <span id="job-remaining">—</span>
+      </div>
     </div>
   </section>
 
-  <!-- Progress -->
-  <section class="card" id="progress-card">
-    <div class="row between">
-      <h2 id="job-file">No job loaded</h2>
-      <span id="job-percent" class="percent">—</span>
+  <!-- Primary actions, always reachable -->
+  <section class="action-bar">
+    <button id="btn-pause" class="primary" type="button" disabled>Pause</button>
+    <button id="btn-cancel" class="danger" type="button" disabled>Cancel</button>
+    <button id="btn-estop" class="estop" type="button">STOP</button>
+  </section>
+  <button id="btn-reconnect" class="ghost small block" type="button" hidden>Reconnect printer</button>
+
+  <!-- Tabs -->
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-tab="temps" role="tab">Temps</button>
+    <button class="tab" data-tab="move" role="tab">Move</button>
+    <button class="tab" data-tab="tune" role="tab">Tune</button>
+    <button class="tab" data-tab="files" role="tab">Files</button>
+    <button class="tab" data-tab="log" role="tab">Log</button>
+  </nav>
+
+  <!-- Temps ---------------------------------------------------------------->
+  <section class="panel active" data-panel="temps">
+    <div class="card">
+      <div class="row between">
+        <h3>Temperature</h3>
+        <div class="chart-legend" id="chart-legend"></div>
+      </div>
+      <canvas id="temp-chart" class="temp-chart" height="180"></canvas>
+      <p class="muted small center" id="chart-note">Collecting data…</p>
     </div>
-    <div class="progress"><div id="progress-fill" class="progress-fill"></div></div>
-    <div class="row between muted small">
-      <span id="job-elapsed">Elapsed —</span>
-      <span id="job-remaining">Remaining —</span>
+    <div class="grid-2" id="temps"></div>
+  </section>
+
+  <!-- Move ----------------------------------------------------------------->
+  <section class="panel" data-panel="move">
+    <div class="card">
+      <div class="row between">
+        <h3>Move</h3>
+        <div class="steps" id="jog-steps">
+          <button class="step" data-step="0.1" type="button">0.1</button>
+          <button class="step active" data-step="1" type="button">1</button>
+          <button class="step" data-step="10" type="button">10</button>
+          <button class="step" data-step="100" type="button">100</button>
+          <span class="muted small">mm</span>
+        </div>
+      </div>
+
+      <div class="jog-wrap">
+        <div class="jog-pad">
+          <button class="jog" data-axis="y" data-dir="1"  style="grid-area:up"    type="button">↑</button>
+          <button class="jog" data-axis="x" data-dir="-1" style="grid-area:left"  type="button">←</button>
+          <button class="jog home" data-home="x,y"        style="grid-area:mid"   type="button" title="Home X and Y">⌂</button>
+          <button class="jog" data-axis="x" data-dir="1"  style="grid-area:right" type="button">→</button>
+          <button class="jog" data-axis="y" data-dir="-1" style="grid-area:down"  type="button">↓</button>
+          <span class="jog-axis-label" style="grid-area:label">X / Y</span>
+        </div>
+
+        <div class="jog-z">
+          <button class="jog" data-axis="z" data-dir="1" type="button">↑</button>
+          <button class="jog home" data-home="z" type="button" title="Home Z">⌂</button>
+          <button class="jog" data-axis="z" data-dir="-1" type="button">↓</button>
+          <span class="jog-axis-label">Z</span>
+        </div>
+      </div>
+
+      <div class="controls">
+        <button id="home-all" class="ghost" type="button">Home all axes</button>
+        <button id="motors-off" class="ghost" type="button">Release motors</button>
+      </div>
+      <p class="muted small">Moving the axes is refused while a print is running.</p>
+    </div>
+
+    <div class="card">
+      <h3>Filament</h3>
+      <div class="field-row">
+        <label for="extrude-tool">Hotend</label>
+        <select id="extrude-tool"></select>
+      </div>
+      <div class="field-row">
+        <label for="extrude-amount">Amount</label>
+        <input id="extrude-amount" type="number" min="1" max="100" step="1" value="10" inputmode="numeric">
+        <span class="muted small">mm</span>
+      </div>
+      <div class="controls">
+        <button id="btn-extrude" class="primary" type="button">Extrude</button>
+        <button id="btn-retract" class="ghost" type="button">Retract</button>
+      </div>
+      <p class="muted small">The nozzle must be above 170 °C or the printer will refuse to move filament.</p>
     </div>
   </section>
 
-  <!-- Temperatures. Cards are built from whatever heaters the printer
-       reports, so a dual-extruder SV02 shows both nozzles automatically. -->
-  <section class="grid-2" id="temps"></section>
-
-  <!-- Controls -->
-  <section class="card">
-    <h3>Controls</h3>
-    <div class="controls">
-      <button id="btn-pause" class="primary" type="button" disabled>Pause</button>
-      <button id="btn-cancel" class="danger" type="button" disabled>Cancel print</button>
-      <button id="btn-estop" class="estop" type="button">Emergency stop</button>
+  <!-- Tune ----------------------------------------------------------------->
+  <section class="panel" data-panel="tune">
+    <div class="card">
+      <h3>Part-cooling fan</h3>
+      <div class="slider-row">
+        <input id="fan-slider" type="range" min="0" max="100" step="5" value="0">
+        <output id="fan-value" class="mono">0%</output>
+      </div>
+      <div class="controls">
+        <button class="preset" data-fan="0" type="button">Off</button>
+        <button class="preset" data-fan="50" type="button">50%</button>
+        <button class="preset" data-fan="100" type="button">Full</button>
+      </div>
     </div>
-    <p class="muted small">Emergency stop sends M112. The printer halts instantly and needs a reconnect or power cycle afterwards.</p>
-    <button id="btn-reconnect" class="ghost small" type="button" hidden>Reconnect printer</button>
+
+    <div class="card">
+      <h3>Print speed</h3>
+      <div class="slider-row">
+        <input id="feed-slider" type="range" min="10" max="300" step="5" value="100">
+        <output id="feed-value" class="mono">100%</output>
+      </div>
+      <p class="muted small">Safe to change mid-print. 100% is what the slicer intended.</p>
+    </div>
+
+    <div class="card">
+      <h3>Flow rate</h3>
+      <div class="slider-row">
+        <input id="flow-slider" type="range" min="50" max="150" step="1" value="100">
+        <output id="flow-value" class="mono">100%</output>
+      </div>
+      <p class="muted small">How much filament is pushed, as a percentage of normal.</p>
+    </div>
+
+    <div class="card">
+      <h3>Z offset nudge</h3>
+      <p class="muted small">Adjusts nozzle height <em>while printing</em> to fix a first layer that is too high or too low.</p>
+      <div class="babystep">
+        <button class="ghost" data-baby="-0.05" type="button">−0.05</button>
+        <button class="ghost" data-baby="-0.01" type="button">−0.01</button>
+        <button class="ghost" data-baby="0.01" type="button">+0.01</button>
+        <button class="ghost" data-baby="0.05" type="button">+0.05</button>
+      </div>
+      <p class="muted small">Down moves the nozzle closer to the bed. This is not saved — use Save to EEPROM to keep it.</p>
+    </div>
+
+    <div class="card">
+      <h3>Maintenance</h3>
+      <div id="maintenance" class="maintenance"></div>
+      <p class="muted small">Auto bed level runs G28 then G29, and only does anything once a probe such as a BLTouch is fitted.</p>
+    </div>
   </section>
 
-  <!-- Maintenance -->
-  <section class="card">
-    <h3>Maintenance</h3>
-    <div id="maintenance" class="maintenance"></div>
-    <p class="muted small">Auto bed level runs G28 then G29, and only does anything once a probe such as a BLTouch is fitted.</p>
+  <!-- Files ---------------------------------------------------------------->
+  <section class="panel" data-panel="files">
+    <div class="card">
+      <h3>Upload G-code</h3>
+      <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Choose or drop a G-code file">
+        <div class="dropzone-icon">↑</div>
+        <p><strong>Drop a .gcode file here</strong></p>
+        <p class="muted small">or tap to choose one</p>
+        <input id="file-input" type="file" accept=".gcode,.gco,.g" hidden>
+      </div>
+      <div id="file-chosen" class="file-chosen" hidden>
+        <span id="file-name"></span>
+        <button id="file-clear" class="ghost small" type="button">Clear</button>
+      </div>
+      <label class="checkbox">
+        <input id="start-now" type="checkbox" checked>
+        Start printing immediately after upload
+      </label>
+      <button id="btn-upload" class="primary block" type="button" disabled>Upload</button>
+      <div id="upload-progress" class="progress thin" hidden><div id="upload-fill" class="progress-fill"></div></div>
+      <p id="upload-status" class="small" hidden></p>
+    </div>
+
+    <div class="card">
+      <div class="row between">
+        <h3>On the printer</h3>
+        <button id="refresh-files" class="ghost small" type="button">Refresh</button>
+      </div>
+      <ul id="file-list" class="files"><li class="muted small">Loading…</li></ul>
+    </div>
   </section>
 
-  <!-- Stored files -->
-  <section class="card">
-    <div class="row between">
-      <h3>On the printer</h3>
-      <button id="refresh-files" class="ghost small" type="button">Refresh</button>
+  <!-- Log ------------------------------------------------------------------>
+  <section class="panel" data-panel="log">
+    <div class="card">
+      <div class="row between">
+        <h3>Recent events</h3>
+        <button id="refresh-events" class="ghost small" type="button">Refresh</button>
+      </div>
+      <ul id="event-list" class="events"><li class="muted small">Loading…</li></ul>
     </div>
-    <ul id="file-list" class="files"><li class="muted small">Loading…</li></ul>
-  </section>
-
-  <!-- Upload -->
-  <section class="card">
-    <h3>Upload G-code</h3>
-    <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Choose or drop a G-code file">
-      <p><strong>Drop a .gcode file here</strong></p>
-      <p class="muted small">or tap to choose one</p>
-      <input id="file-input" type="file" accept=".gcode,.gco,.g" hidden>
-    </div>
-    <div id="file-chosen" class="file-chosen" hidden>
-      <span id="file-name"></span>
-      <button id="file-clear" class="ghost small" type="button">Clear</button>
-    </div>
-    <label class="checkbox">
-      <input id="start-now" type="checkbox" checked>
-      Start printing immediately after upload
-    </label>
-    <button id="btn-upload" class="primary" type="button" disabled>Upload</button>
-    <div id="upload-progress" class="progress thin" hidden><div id="upload-fill" class="progress-fill"></div></div>
-    <p id="upload-status" class="small" hidden></p>
-  </section>
-
-  <!-- Log -->
-  <section class="card">
-    <div class="row between">
-      <h3>Recent events</h3>
-      <button id="refresh-events" class="ghost small" type="button">Refresh</button>
-    </div>
-    <ul id="event-list" class="events"><li class="muted small">Loading…</li></ul>
   </section>
 
   <footer class="muted small center">
@@ -130,7 +256,7 @@
   </footer>
 </main>
 
-<!-- Confirmation dialog ---------------------------------------------------->
+<!-- Confirmation dialog ----------------------------------------------------->
 <dialog id="confirm-dialog" class="confirm">
   <h3 id="confirm-title">Are you sure?</h3>
   <p id="confirm-body"></p>

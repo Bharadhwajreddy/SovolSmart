@@ -517,8 +517,14 @@ The first visit shows the **setup wizard**. Work through it:
 2. **Online connectivity check** — leave enabled.
 3. **Anonymous usage tracking** — your choice, either is fine.
 4. **Plugin blacklist** — leave enabled.
-5. **Default printer profile** — you can accept defaults now and refine later. If it offers extruder count, set it to **2** for the SV02's dual extruders. Bed size is 280 × 240 × 300 mm. Getting this wrong does not stop the connection; it only affects the visualiser and which heaters get reported.
+5. **Default printer profile** — set **Number of extruders: 2** for the SV02's dual extruders, and bed size 280 × 240 × 300 mm. Getting this wrong does not stop the connection; it only affects the visualiser and which heaters get reported.
+
+   ⚠️ **Leave "Shared nozzle" UNTICKED.** This one is easy to get wrong and it fails *silently*. The SV02 has two separate hotends with two separate thermistors. With "shared nozzle" ticked, OctoPrint assumes one heater, discards `tool1`'s real reading and reports `tool0`'s value in both slots. Everything looks healthy — you get two temperature cards showing plausible numbers — but the second hotend is not being monitored at all, and a fault on it is invisible to both OctoPrint and the dashboard.
+
+   **How to tell you have hit it:** `tool0` and `tool1` read *exactly* the same value, to two decimal places, sample after sample. Two real thermistors never agree that precisely. Fix it in *Settings → Printer Profiles → edit → Extruders* by unticking **Shared nozzle**, then disconnect and reconnect.
 6. Finish, and restart if it asks.
+
+⚠️ **Watch out for the virtual printer.** OctoPi ships with OctoPrint's built-in printer *simulator*, which appears in the serial-port list as `/tmp/printer`. If OctoPrint auto-connects to that instead of `/dev/ttyUSB0`, everything looks perfect — "Operational", temperatures, the lot — but it is a simulation and your printer is not involved. **Always confirm the port says `/dev/ttyUSB0`** (or `/dev/ttyACM0`), never `/tmp/printer`.
 
 **Success looks like:** the OctoPrint dashboard with a "Connection" panel at the top left.
 
@@ -643,10 +649,20 @@ node --version
 Run this exactly as written. It is the same conditional used in the project's own `docs/first-time-setup.md`, and it picks the newest Node that actually runs on whatever architecture you are on:
 
 ```bash
-if [ "$(uname -m)" = "aarch64" ]; then MAJOR=22; else MAJOR=20; fi
-curl -fsSL "https://deb.nodesource.com/setup_${MAJOR}.x" | sudo -E bash -
-sudo apt-get install -y nodejs
+# NodeSource no longer publishes 32-bit ARM (armhf) packages at all -- its
+# setup script exits with "Unsupported architecture: armhf". The standard
+# OctoPi image IS armhf, so use Node's own official tarball instead.
+# Node 20 is the last major line with official linux-armv7l builds.
+if [ "$(uname -m)" = "aarch64" ]; then
+  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs
+else
+  V=v20.20.2
+  curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/$V/node-$V-linux-armv7l.tar.xz"
+  sudo tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1     --exclude CHANGELOG.md --exclude LICENSE --exclude README.md
+  rm /tmp/node.tar.xz
+fi
 node --version
+npm --version
 ```
 
 *What each line does:*

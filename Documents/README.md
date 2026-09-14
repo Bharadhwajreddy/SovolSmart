@@ -23,6 +23,7 @@ reference afterwards.
 | 05 | [Operations & troubleshooting](05-operations-and-troubleshooting.md) | Once it is running. Daily use, and when something breaks. |
 | 06 | [Firmware & hardware](06-firmware-and-hardware.md) | Before touching printer firmware, or when fitting a BLTouch. |
 | 07 | [Decision log & future work](07-decision-log-and-future-work.md) | When you wonder "why was it built that way?" or "what's next?" |
+| 08 | [Deployment log](08-deployment-log.md) | What actually happened on real hardware, and the five problems it exposed. |
 
 Two research documents already existed in the app folder and are still the
 authority on their subjects:

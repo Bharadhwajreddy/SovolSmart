@@ -28,6 +28,34 @@ let snapshot = {
  */
 const deviationSince = new Map();
 
+/**
+ * Rolling temperature history for the dashboard graph. Kept server-side rather
+ * than accumulated in the browser so the chart survives a page reload and is
+ * already populated the moment you open it on your phone.
+ *
+ * 720 samples at the 2.5s poll interval is 30 minutes.
+ */
+const HISTORY_LIMIT = 720;
+/** @type {{t:number, [sensor:string]: {a:number|null, g:number|null}}[]} */
+const history = [];
+
+function recordHistory(printer, now) {
+  const entry = { t: now };
+  for (const sensor of listSensors(printer)) {
+    entry[sensor.key] = {
+      a: Number.isFinite(sensor.reading?.actual) ? Number(sensor.reading.actual.toFixed(1)) : null,
+      g: Number.isFinite(sensor.reading?.target) ? Number(sensor.reading.target.toFixed(0)) : null,
+    };
+  }
+  history.push(entry);
+  if (history.length > HISTORY_LIMIT) history.shift();
+}
+
+/** Newest-last samples, for the chart. */
+export function getHistory(limit = HISTORY_LIMIT) {
+  return history.slice(-Math.max(1, Math.min(limit, HISTORY_LIMIT)));
+}
+
 /** @type {Set<string>} sensors already alerted on, so one fault doesn't spam. */
 const alertedSensors = new Set();
 
@@ -224,6 +252,8 @@ async function poll() {
       alerted.offline = false;
       logEvent('info', 'octoprint_back', 'Reconnected to OctoPrint.');
     }
+
+    recordHistory(printer, now);
 
     await handleStateChange(state, job);
     if (job?.job?.file?.name) previousFile = job.job.file.name;
