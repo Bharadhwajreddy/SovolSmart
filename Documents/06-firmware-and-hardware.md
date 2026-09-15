@@ -68,7 +68,7 @@ Marked **[verified]** where a source read for this document states it, and
 | Mainboard | **Disputed** — MKS Robin Nano (32-bit) per this repo; ATmega2560 / "Creality V2.2.1 or V2.2" per the installation guide PDF | Conflicting, see above |
 | MCU | Follows from the board: STM32 if Robin Nano, ATmega2560 if the 8-bit board | Conflicting |
 | Extruders | **Dual extruder**, described in the firmware filenames as a *mixing* / *Mixcolor* extruder kit | [verified] — repo and PDF filenames both say so |
-| Hotend arrangement | Two filament inputs feeding the mixing hotend assembly; the repo describes the carriage as "two hotends side by side" | [verified] repo; the PDFs say nothing about hotend geometry |
+| Hotend arrangement | Two filament inputs feeding **one** mixing nozzle — one heater, one thermistor. The printer's own firmware reports `EXTRUDER_COUNT:1` to `M115` and a single `T:` reading to `M105`. (An earlier note in this repo said "two hotends side by side"; the firmware contradicts it.) | [verified] on the machine, 15 Sep 2026 |
 | Display | **DWIN touchscreen** with its **own processor, own firmware, and its own microSD card slot on the display PCB** | [verified] — the Olaf guide's whole procedure depends on this |
 | Stock firmware | **Marlin 2.0** from Sovol. Filenames seen: `SV02_Marlin_2.0.0_Mixing_V1.1.hex`, `SV02_Marlin_2.0.0_Mixing_BL_V1.1.hex`, and elsewhere `SV02_Marlin_2.0.0_V1.2.hex` | [verified] from PDF screenshots |
 | Stock bed levelling | **Manual**, four knobs. No probe fitted from the factory | [verified] repo |
@@ -568,8 +568,8 @@ and the `_BL_` firmware is flashed, **it starts working with no change to this
 app.**
 
 The full analysis of the probe options — BLTouch versus a load-cell conversion
-versus an eddy-current scanner, and why the SV02's dual-hotend carriage rules
-out true nozzle-as-probe — is in
+versus an eddy-current scanner, and why true nozzle-as-probe means redesigning
+the SV02's toolhead — is in
 [`nozzle-probe-research.md`](../sv02-control/docs/nozzle-probe-research.md).
 It concludes: fit the official Sovol BLTouch kit. This document is the firmware
 half of that job.

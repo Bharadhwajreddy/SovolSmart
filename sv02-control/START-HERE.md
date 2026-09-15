@@ -123,7 +123,7 @@ later step first never works.
 | `docs/nozzle-probe-research.md` | auto bed levelling and nozzle-as-probe options |
 | `server/` | the backend |
 | `public/` | the dashboard interface |
-| `test/` | 37 end-to-end tests, plus the mock printer and camera |
+| `test/` | 56 end-to-end tests, plus the mock printer and camera |
 | `scripts/check.mjs` | the `npm run check` connection checker |
 | `demo/` | builds a static demo with a simulated printer |
 | `deploy/` | the systemd service file |

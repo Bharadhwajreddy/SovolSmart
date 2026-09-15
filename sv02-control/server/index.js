@@ -279,9 +279,18 @@ app.post('/api/control/extrude', route(async (req, res) => {
   }
   if (refuseWhilePrinting(res, 'Extruding')) return undefined;
 
+  const snap = getSnapshot();
+  const drive = Number(tool.replace('tool', ''));
+  if (drive >= snap.toolhead.extruders) {
+    const n = snap.toolhead.extruders;
+    return res.status(400).json({ error: 'This printer has ' + n + ' extruder drive' + (n === 1 ? '' : 's') + '.' });
+  }
+
   // Marlin refuses to extrude below the cold-extrusion threshold, but failing
   // here with a clear reason beats a silent no-op the user cannot explain.
-  const sensor = getSnapshot().sensors.find((entry) => entry.key === tool);
+  // With a shared nozzle every drive melts filament in the one heater, tool0.
+  const heaterKey = snap.toolhead.sharedNozzle ? 'tool0' : tool;
+  const sensor = snap.sensors.find((entry) => entry.key === heaterKey);
   if (sensor && Number.isFinite(sensor.actual) && sensor.actual < 170) {
     return res.status(409).json({
       error: sensor.label + ' is only ' + sensor.actual.toFixed(0) + '°C. Heat it to at least 170°C before extruding.',

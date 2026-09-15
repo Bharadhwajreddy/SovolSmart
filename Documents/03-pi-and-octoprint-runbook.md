@@ -70,7 +70,7 @@ flowchart TD
     RF["Re-flash the card with correct WiFi and SSH settings"]
     P2["Phase 2: SSH in, confirm armv7l 32-bit"]
     P3["Phase 3: OctoPrint connects to the printer"]
-    G2{"Live temps for tool0, tool1 and bed?"}
+    G2{"Live temps for the nozzle and bed?"}
     FIXUSB["Fix USB cable, serial port or baud rate. STOP here."]
     P4["Phase 4: Generate OctoPrint application key"]
     P5["Phase 5: Install Node 20 for 32-bit ARM"]
@@ -428,9 +428,9 @@ sudo apt-get update
 >
 > The `sv02-control` app **never talks to the printer directly.** It talks to OctoPrint over HTTP, and OctoPrint talks to the printer over USB serial. If OctoPrint cannot see the printer, then no amount of correct `.env` values, Node versions, systemd units or Tailscale configuration will produce a working dashboard. You will just get a beautifully deployed app showing "printer offline".
 >
-> **Do not proceed to Phase 4 until live temperatures for `tool0`, `tool1` and `bed` are visibly updating in the OctoPrint web interface.** If you are tempted to "carry on and come back to it" — that is the mistake this box exists to prevent.
+> **Do not proceed to Phase 4 until live temperatures for the nozzle (`tool0`) and the `bed` are visibly updating in the OctoPrint web interface.** If you are tempted to "carry on and come back to it" — that is the mistake this box exists to prevent.
 
-**Goal.** OctoPrint's web UI shows three live, changing temperature readings.
+**Goal.** OctoPrint's web UI shows live, changing temperature readings for the nozzle and the bed.
 
 ### 3.1 Confirm the printer appears as a serial device — on the Pi
 
@@ -517,11 +517,9 @@ The first visit shows the **setup wizard**. Work through it:
 2. **Online connectivity check** — leave enabled.
 3. **Anonymous usage tracking** — your choice, either is fine.
 4. **Plugin blacklist** — leave enabled.
-5. **Default printer profile** — set **Number of extruders: 2** for the SV02's dual extruders, and bed size 280 × 240 × 300 mm. Getting this wrong does not stop the connection; it only affects the visualiser and which heaters get reported.
+5. **Default printer profile** — set **Number of extruders: 2** and **tick "Shared nozzle"**, with bed size 280 × 240 × 300 mm. The SV02 is a **2-in-1-out** machine: two extruder drives feed a **single** nozzle with **one** heater and **one** thermistor. Its firmware confirms it — `M115` reports `EXTRUDER_COUNT:1`, and `M105` answers with a single `T:` reading.
 
-   ⚠️ **Leave "Shared nozzle" UNTICKED.** This one is easy to get wrong and it fails *silently*. The SV02 has two separate hotends with two separate thermistors. With "shared nozzle" ticked, OctoPrint assumes one heater, discards `tool1`'s real reading and reports `tool0`'s value in both slots. Everything looks healthy — you get two temperature cards showing plausible numbers — but the second hotend is not being monitored at all, and a fault on it is invisible to both OctoPrint and the dashboard.
-
-   **How to tell you have hit it:** `tool0` and `tool1` read *exactly* the same value, to two decimal places, sample after sample. Two real thermistors never agree that precisely. Fix it in *Settings → Printer Profiles → edit → Extruders* by unticking **Shared nozzle**, then disconnect and reconnect.
+   ⚠️ **Do not read a frozen number as a second sensor.** With shared nozzle ticked, OctoPrint reports the one heater under both `tool0` and `tool1`, so the two values match exactly — that is correct. The trap that caught this build was the opposite: unticking it made `tool1` appear to hold a *different* value, `21.56 °C`, which looked like proof of a second thermistor. It never moved. It was a stale entry, not a sensor. **A real thermistor always jitters.** If a reading holds to two decimal places sample after sample, it is not live. To be certain, send `M115` in OctoPrint's Terminal tab and read `EXTRUDER_COUNT`.
 6. Finish, and restart if it asks.
 
 ⚠️ **Watch out for the virtual printer.** OctoPi ships with OctoPrint's built-in printer *simulator*, which appears in the serial-port list as `/tmp/printer`. If OctoPrint auto-connects to that instead of `/dev/ttyUSB0`, everything looks perfect — "Operational", temperatures, the lot — but it is a simulation and your printer is not involved. **Always confirm the port says `/dev/ttyUSB0`** (or `/dev/ttyACM0`), never `/tmp/printer`.
@@ -545,10 +543,10 @@ Press **Connect**.
 **Success looks like — and nothing less than this counts:**
 
 - The Connection panel collapses and shows **State: Operational**.
-- The **Temperature** tab shows **three** rows updating every couple of seconds: **Tool 0**, **Tool 1**, and **Bed**, each with an *Actual* reading near room temperature and a *Target* of 0.
-- The Terminal tab shows a stream of `Recv: ok T:21.4 /0.0 T0:21.4 /0.0 T1:21.9 /0.0 B:22.1 /0.0` lines.
+- The **Temperature** tab shows the **nozzle** and the **Bed** updating every couple of seconds, each with an *Actual* reading near room temperature and a *Target* of 0. With shared nozzle ticked, Tool 0 and Tool 1 show the same value — they are the same heater.
+- The Terminal tab shows a stream of lines like `Recv: ok T:21.4 /0.0 B:22.1 /0.0` — **one** `T:` reading, because the SV02 has one heater.
 
-Two hotends must appear because the SV02 is a dual extruder. **If only Tool 0 appears**, the printer profile has one extruder configured — fix it in *Settings → Printer Profiles → edit → Extruders → Number of extruders: 2*, then disconnect and reconnect. The `sv02-control` app will run with one hotend, but you would be silently losing half your printer's monitoring.
+One nozzle reading is correct for the SV02. The dashboard shows it as a single **Nozzle** card tagged `T0+T1`, and keeps both drives available for extrusion.
 
 To prove the temperatures are real rather than a stale cache, set Tool 0's target to 40 °C and watch the Actual value climb. Then set it back to 0.
 
@@ -570,9 +568,9 @@ flowchart TD
     BUSY{"Does the Terminal tab show a permission or port-busy error?"}
     PERM["Add the user to the dialout group with sudo usermod -a -G dialout $USER then reboot. Also stop anything else holding the port."]
     RESET["Power-cycle the printer, then Disconnect and Connect in OctoPrint. The Robin Nano sometimes needs the printer restarted after a failed handshake."]
-    ONETOOL{"Connected, but only Tool 0 shows?"}
-    PROFILE["Settings, Printer Profiles, set Number of extruders to 2, then reconnect."]
-    GOOD["Operational, with tool0, tool1 and bed all live. Gate passed."]
+    ONETOOL{"Connected, but the temperatures never move?"}
+    PROFILE["A frozen reading is stale, not live. Disconnect, reconnect, and check M105 in the Terminal tab."]
+    GOOD["Operational, with the nozzle and bed both live. Gate passed."]
 
     START --> LSUSB
     LSUSB -- no --> POWER
@@ -960,7 +958,7 @@ Configuration
 
 OctoPrint  (http://localhost:5000)
   ✓ Connected in 141ms — OctoPrint 1.10.0
-  ✓ Printer connected. Heaters reported: tool0, tool1, bed
+  ✓ Printer connected. Heaters reported: bed, tool0
 
 Camera  (http://<PHONE_IP>:<PHONE_PORT>/video)
   ✓ Connected in 109ms — multipart/x-mixed-replace
@@ -973,7 +971,7 @@ Notifications  (https://ntfy.sh/<NTFY_TOPIC>)
 All checks passed. Start the app with: npm start
 ```
 
-**The single most important line is `Heaters reported: tool0, tool1, bed`.** All three, on a dual-extruder SV02. If it says `tool0, bed`, the printer profile still has one extruder — go back to Phase 3.5. The app will run, but you would be flying half blind.
+**The single most important line is `Heaters reported: bed, tool0`.** If it lists no heaters, the printer is not really connected — go back to Phase 3. It may also say *Only one hotend is reported*: on the SV02 that is correct, because both drives share one nozzle.
 
 The script exits with status `0` on success and `1` on failure, so `echo $?` afterwards tells you the result if the output has scrolled away.
 
@@ -1440,8 +1438,8 @@ Test the links in this order, and **stop at the first failure**:
 |---|---|---|---|
 | 1 | Printer | Look at it | Screen lit, powered on |
 | 2 | USB | `lsusb` and `ls /dev/ttyUSB* /dev/ttyACM*` on the Pi | The serial chip is listed and a device node exists |
-| 3 | OctoPrint ↔ printer | `http://octopi.local` in a browser | State: Operational, and `tool0`, `tool1`, `bed` all updating |
-| 4 | App ↔ OctoPrint ↔ camera | `npm run check` on the Pi | All ticks; heaters read `tool0, tool1, bed` |
+| 3 | OctoPrint ↔ printer | `http://octopi.local` in a browser | State: Operational, and the nozzle and `bed` both updating |
+| 4 | App ↔ OctoPrint ↔ camera | `npm run check` on the Pi | All ticks; heaters read `bed, tool0` |
 | 5 | App running | `sudo systemctl status sv02-control` | `enabled` and `active (running)` |
 | 6 | Local access | `http://octopi.local:8088` on home WiFi | Login works, camera and temps live |
 | 7 | Remote access | `http://100.x.y.z:8088` on mobile data | Same, with WiFi off |

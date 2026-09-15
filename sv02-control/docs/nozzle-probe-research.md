@@ -47,15 +47,15 @@ Your SV02 has:
 
 - An **MKS Robin Nano** 32-bit board
 - **Marlin 2.0** from Sovol
-- A **dual-extruder** carriage — two hotends side by side
+- A **2-in-1 dual extruder** — two filament drives feeding a single mixing
+  nozzle (the firmware reports `EXTRUDER_COUNT:1`)
 - **Manual bed levelling** with the four knobs, out of the box
 
 There is no load cell in that toolhead, and no sane place to add one: a load
 cell probe needs the hotend mounted on a defined flexure so that contact force
 transfers into the sensor and nothing else does. That's a mechanical redesign
-of the carriage, and the SV02's dual-hotend carriage makes it worse — you'd
-need to solve it *twice*, once per nozzle, or accept that only one nozzle is
-ever the probe.
+of the carriage. The SV02's two drives feed a single nozzle, so it would only
+have to be solved once — but it is still a redesign, not a bolt-on.
 
 So: the honest answer on true nozzle-as-probe is that it's a build project,
 not an upgrade.
@@ -110,7 +110,7 @@ But read the requirements honestly:
   speed) wired to the host or an MCU.
 - **Redesign and print a new toolhead mount** so the hotend is on a flexure
   that transfers contact force into the load cell and nothing else. This is
-  the hard part, and on a dual-hotend carriage it's harder still.
+  the hard part — a bespoke mount around the SV02's 2-in-1 mixing hotend.
 - Calibrate trigger force, and expect to tune it. Even on MK4 hardware,
   people have had to recalibrate the cell and adjust force thresholds to get
   reliable Z homing.

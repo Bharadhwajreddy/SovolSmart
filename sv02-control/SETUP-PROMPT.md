@@ -31,9 +31,12 @@ need me to do something physical or something in a web browser.
   the network, that is the first thing to suspect.
 - **The OctoPi image is 32-bit (armv7l)** even though the Pi 3B chip is 64-bit
   capable. This breaks the usual Node install — see Step 4.
-- **The printer is a dual extruder**, so OctoPrint should report `tool0`,
-  `tool1` and `bed`. If only one hotend appears, something is wrong.
-- The app in this folder is finished and tested (37 passing tests). You are
+- **The printer is a 2-in-1 dual extruder**: two filament drives feed ONE
+  nozzle with one heater, and its firmware reports `EXTRUDER_COUNT:1`. Set the
+  OctoPrint printer profile to 2 extruders with **shared nozzle ticked**; the
+  dashboard then shows one nozzle and the bed. A reading that never changes is
+  stale, not a second sensor.
+- The app in this folder is finished and tested (its end-to-end test suite passes). You are
   deploying it, not writing it. Read its `README.md` and
   `docs/first-time-setup.md` for detail.
 
@@ -135,8 +138,8 @@ Run `npm run check` on the Pi and show me the output. It tests the OctoPrint
 connection, the API key, whether the printer is actually connected, and the
 camera stream.
 
-Every line should be a tick, and the heater list should read `tool0, tool1,
-bed`. If anything fails, fix it before continuing — the output names the cause
+Every line should be a tick (the camera may fail until it is set up), and the
+heater list should read `bed, tool0`. If anything fails, fix it before continuing — the output names the cause
 and the fix.
 
 ## Step 8 — Run it, then make it permanent

@@ -19,10 +19,10 @@ let snapshot = {
 };
 
 /**
- * Anomaly tracking, keyed by OctoPrint's own sensor name ('tool0', 'tool1',
- * 'bed'). Discovered from the reported temperatures rather than hardcoded:
- * the SV02 is a dual-extruder machine, so how many hotends exist depends on
- * the printer and its firmware, not on an assumption made here.
+ * Anomaly tracking, keyed by OctoPrint's own sensor name ('tool0', 'bed', ...).
+ * Discovered from the reported temperatures rather than hardcoded: how many
+ * heaters exist depends on the printer, its firmware and its profile, not on an
+ * assumption made here. (The SV02 has two extruder drives but ONE heater.)
  *
  * @type {Map<string, number>} sensor key -> epoch ms it first went out of range
  */
@@ -67,6 +67,13 @@ let previousFile = null;
 let running = false;
 let timer = null;
 
+/**
+ * Toolhead geometry from the OctoPrint printer profile. Re-read periodically
+ * rather than on every poll: it only changes when someone edits the profile.
+ */
+let toolhead = { extruders: 1, sharedNozzle: false };
+let toolheadCheckedAt = 0;
+
 function formatDuration(seconds) {
   if (!Number.isFinite(seconds) || seconds < 0) return null;
   const s = Math.round(seconds);
@@ -80,9 +87,12 @@ function formatDuration(seconds) {
 
 /**
  * Discover which heaters this printer actually has, from what OctoPrint
- * reports rather than from an assumption. The SV02 is dual-extruder, so
- * `tool1` is expected — but a single-hotend conversion or a firmware that
- * only reports one tool works with the same code.
+ * reports rather than from an assumption.
+ *
+ * A shared nozzle is ONE heater that OctoPrint reports once per extruder
+ * drive -- on the SV02 the same reading appears as both `tool0` and `tool1`.
+ * Only `tool0` is kept in that case; otherwise the dashboard would show one
+ * heater twice and a single fault would raise one alert per drive.
  *
  * Sorted so tools come before the bed, and tool0 before tool1.
  *
@@ -91,25 +101,28 @@ function formatDuration(seconds) {
 function listSensors(printer) {
   const temps = printer?.temperature || {};
 
-  return Object.keys(temps)
+  const keys = Object.keys(temps)
     .filter((key) => /^(tool\d+|bed)$/.test(key) && temps[key] && typeof temps[key] === 'object')
+    .filter((key) => !(toolhead.sharedNozzle && /^tool[1-9]\d*$/.test(key)))
     .sort((a, b) => {
       if (a === 'bed') return 1;
       if (b === 'bed') return -1;
       return a.localeCompare(b, undefined, { numeric: true });
-    })
-    .map((key) => ({
-      key,
-      kind: key === 'bed' ? 'bed' : 'tool',
-      label: sensorLabel(key, temps),
-      reading: temps[key],
-    }));
+    });
+
+  const toolCount = keys.filter((key) => key !== 'bed').length;
+
+  return keys.map((key) => ({
+    key,
+    kind: key === 'bed' ? 'bed' : 'tool',
+    label: sensorLabel(key, toolCount),
+    reading: temps[key],
+  }));
 }
 
-/** Human label: a lone hotend is just "Nozzle"; two become "Nozzle 1"/"Nozzle 2". */
-function sensorLabel(key, temps) {
+/** Human label: a lone nozzle is just "Nozzle"; two become "Nozzle 1"/"Nozzle 2". */
+function sensorLabel(key, toolCount) {
   if (key === 'bed') return 'Bed';
-  const toolCount = Object.keys(temps).filter((k) => /^tool\d+$/.test(k)).length;
   if (toolCount <= 1) return 'Nozzle';
   return `Nozzle ${Number(key.replace('tool', '')) + 1}`;
 }
@@ -253,6 +266,18 @@ async function poll() {
       logEvent('info', 'octoprint_back', 'Reconnected to OctoPrint.');
     }
 
+    // Re-read the toolhead geometry now and then, and straight away after a
+    // reconnect, so a profile edit shows up without restarting the app. It must
+    // happen before the history sample, which depends on it.
+    if (!printer?.__disconnected && now - toolheadCheckedAt >= config.profileRefreshMs) {
+      toolheadCheckedAt = now;
+      try {
+        toolhead = await octo.getToolhead();
+      } catch (err) {
+        logEvent('warn', 'profile_unreadable', `Could not read the printer profile: ${err.message}`);
+      }
+    }
+
     recordHistory(printer, now);
 
     await handleStateChange(state, job);
@@ -286,6 +311,7 @@ async function poll() {
     }
 
     previousState = 'offline';
+    toolheadCheckedAt = 0;
   }
 }
 
@@ -322,8 +348,8 @@ export function getSnapshot() {
     updatedAt,
     offlineReason: printer?.__disconnected ? printer.reason : error,
 
-    // One entry per heater the printer actually reports, so the dashboard
-    // renders two nozzles on a dual-extruder SV02 and one on a single.
+    // One entry per heater the printer actually has. A shared nozzle counts
+    // once, however many extruder drives feed it.
     sensors: listSensors(printer).map((sensor) => ({
       key: sensor.key,
       label: sensor.label,
@@ -336,6 +362,9 @@ export function getSnapshot() {
         : null,
       alerting: alertedSensors.has(sensor.key),
     })),
+    // Extruder drives are separate from heaters: the SV02 has two drives
+    // feeding one nozzle, and either drive can still be extruded on.
+    toolhead: { extruders: toolhead.extruders, sharedNozzle: toolhead.sharedNozzle },
     job: {
       file: job?.job?.file?.name ?? null,
       completion: job?.progress?.completion ?? null,

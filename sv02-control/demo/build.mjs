@@ -25,6 +25,9 @@ for (const name of ['app.js', 'styles.css']) {
 }
 fs.copyFileSync(path.join(here, 'mock-backend.js'), path.join(outDir, 'mock-backend.js'));
 
+// Self-hosted IBM Plex, so the demo renders in the real typeface too.
+fs.cpSync(path.join(publicDir, 'fonts'), path.join(outDir, 'fonts'), { recursive: true });
+
 let html = fs.readFileSync(path.join(publicDir, 'index.html'), 'utf8');
 
 // The mock must install itself before app.js runs.

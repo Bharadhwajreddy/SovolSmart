@@ -87,6 +87,7 @@ const server = spawn(process.execPath, ['server/index.js'], {
     TRUST_PROXY_HTTPS: 'false',
     TEMP_DEVIATION_C: '15',
     TEMP_DEVIATION_SECONDS: '3',
+    PROFILE_REFRESH_MS: '500',
     LOG_FILE: './data/test-events.log',
   },
   stdio: ['ignore', 'pipe', 'pipe'],
@@ -366,6 +367,64 @@ try {
       const { status } = await post(path, payload);
       assert.equal(status, 200, `${path} must work mid-print`);
     }
+  });
+
+  console.log('\nShared nozzle (the real SV02 layout)');
+
+  /** Poll until the server has re-read the printer profile. */
+  async function waitForToolhead(shared, timeoutMs = 12000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const { body } = await call('/api/status');
+      if (body.toolhead && body.toolhead.sharedNozzle === shared) return body;
+      await sleep(300);
+    }
+    throw new Error(`toolhead.sharedNozzle never became ${shared}`);
+  }
+
+  await test('the toolhead geometry comes from the printer profile', async () => {
+    const body = await waitForToolhead(false);
+    assert.equal(body.toolhead.extruders, 2);
+    assert.equal(body.sensors.filter((s) => s.kind === 'tool').length, 2);
+  });
+
+  await test('a shared nozzle is shown as ONE heater, not one per drive', async () => {
+    octoMock.setProfile({ sharedNozzle: true });
+    const body = await waitForToolhead(true);
+    const tools = body.sensors.filter((s) => s.kind === 'tool');
+    assert.equal(tools.length, 1, 'two drives feeding one nozzle are one heater');
+    assert.equal(tools[0].key, 'tool0');
+    assert.equal(tools[0].label, 'Nozzle');
+    assert.equal(body.toolhead.extruders, 2, 'both drives are still real');
+  });
+
+  await test('the chart history records the shared nozzle once', async () => {
+    await sleep(3000);
+    const { body } = await call('/api/history?limit=1');
+    const latest = body.samples.at(-1);
+    assert.ok(latest.tool0, 'expected the shared nozzle as tool0');
+    assert.equal(latest.tool1, undefined, 'tool1 must not appear as a second heater');
+  });
+
+  await test('drive 2 extrudes through the shared nozzle', async () => {
+    octoMock.setMode('idle');
+    await waitForState('idle');
+    const { status, body } = await post('/api/control/extrude', { tool: 'tool1', amount: 5 });
+    assert.equal(status, 200, body && body.error);
+    assert.deepEqual(lastGcode(), ['T1', 'G91', 'G1 E5 F300', 'G90']);
+  });
+
+  await test('a drive the printer does not have is refused', async () => {
+    const { status } = await post('/api/control/extrude', { tool: 'tool2', amount: 5 });
+    assert.equal(status, 400);
+  });
+
+  await test('switching back to independent hotends shows both again', async () => {
+    octoMock.setProfile({ sharedNozzle: false });
+    const body = await waitForToolhead(false);
+    assert.equal(body.sensors.filter((s) => s.kind === 'tool').length, 2);
+    octoMock.setMode('printing');
+    await waitForState('printing');
   });
 
   console.log('\nStored files');

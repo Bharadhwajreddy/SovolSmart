@@ -4,7 +4,7 @@
 counts as "done" for each phase, which steps are gates you must not walk past,
 and where we are right now.
 
-Last updated: **28 August 2026**
+Last updated: **15 September 2026**
 
 ## Contents
 
@@ -31,19 +31,19 @@ Last updated: **28 August 2026**
 | Phase | Status |
 |---|---|
 | 0 — Understand and verify the codebase | ✅ **Done** |
-| 1 — Prove it on the laptop with simulated hardware | ✅ **Done** — running at `http://localhost:8088` |
-| 2 — Bring up the Pi | 🟡 **In progress** — SD card being written |
-| 3 — OctoPrint talks to the printer | ⬜ Not started — **this is the gate** |
-| 4 — Camera | ⬜ Not started |
-| 5 — Deploy the dashboard | ⬜ Not started |
-| 6 — Make it permanent (systemd) | ⬜ Not started |
-| 7 — Reach it from anywhere (Tailscale) | ⬜ Not started |
-| 8 — Notifications and the safety net | ⬜ Not started |
-| 9 — Hardening and housekeeping | ⬜ Not started |
+| 1 — Prove it on the laptop with simulated hardware | ✅ **Done** |
+| 2 — Bring up the Pi | ✅ **Done** — `octopi.local`; power supply replaced after under-voltage |
+| 3 — OctoPrint talks to the printer | ✅ **Done** — `/dev/ttyUSB0` @ 115200, auto-connect on boot |
+| 4 — Camera | 🟡 **Configured, not streaming** — IP Webcam's server needs starting on the phone |
+| 5 — Deploy the dashboard | ✅ **Done** — light instrument-panel UI |
+| 6 — Make it permanent (systemd) | ✅ **Done** — verified by a real power cycle |
+| 7 — Reach it from anywhere | ✅ **Done** — Tailscale Funnel, `https://octopi.tail928e81.ts.net` |
+| 8 — Notifications and the safety net | 🟡 **Configured** — ntfy topic set and test-sent; phone subscription to confirm |
+| 9 — Hardening and housekeeping | ⬜ DHCP reservations, a stronger password, a smoke alarm |
 
-**Your immediate next action:** when the SD card finishes writing, go to
-[Phase 2](#phase-2--bring-up-the-pi-in-progress) and follow
-[03 — Pi & OctoPrint runbook](03-pi-and-octoprint-runbook.md).
+**Your immediate next action:** start the IP Webcam server on the camera phone,
+then give that phone a DHCP reservation in the router. What actually happened
+during the build is recorded in [08 — Deployment log](08-deployment-log.md).
 
 ## The phases at a glance
 
@@ -84,7 +84,7 @@ reading temperatures.
 ```mermaid
 flowchart TD
     P2["<b>Phase 2</b><br/>Pi boots, joins WiFi,<br/>SSH works"]
-    P3{"<b>Phase 3 — GATE</b><br/>OctoPrint shows live<br/>tool0, tool1, bed"}
+    P3{"<b>Phase 3 — GATE</b><br/>OctoPrint shows live<br/>nozzle and bed"}
     P4["<b>Phase 4</b><br/>Camera streams<br/>on the LAN"]
     P5["<b>Phase 5</b><br/>npm run check passes<br/>dashboard loads on WiFi"]
     P6["<b>Phase 6</b><br/>systemd service<br/>survives a reboot"]
@@ -133,7 +133,8 @@ npm start                       # the real app on :8088
 Open **http://localhost:8088**, password **`printer123`**.
 
 `npm run check` reports all green, including `Heaters reported: tool0, tool1,
-bed` — the dual-extruder path is exercised.
+bed` — the simulated printer has two independent hotends, which exercises
+the multi-heater path. (The real SV02 has one shared nozzle.)
 
 Nothing is connected and nothing can be damaged. This is the *real* app, not a
 mock-up; only the printer and camera behind it are simulated.
@@ -171,8 +172,8 @@ Full detail: **[03 — Pi & OctoPrint runbook](03-pi-and-octoprint-runbook.md)**
 
 ## Phase 3 — OctoPrint talks to the printer (the gate)
 
-**Goal:** OctoPrint's own web page shows live, changing temperatures for
-`tool0`, `tool1` and `bed`.
+**Goal:** OctoPrint's own web page shows live, changing temperatures for the
+nozzle and the bed.
 
 **This is the gate. Do not proceed until it passes.** Every remaining phase
 reads its data from here. If this does not work, everything downstream will
@@ -184,7 +185,7 @@ fail in confusing ways that look like app bugs and are not.
 - [ ] `ls /dev/ttyUSB* /dev/ttyACM*` shows a device
 - [ ] `http://octopi.local` loads, setup wizard completed
 - [ ] **Connect** pressed (baud rate `115200` if `AUTO` fails)
-- [ ] Live temperatures appear, and **both hotends** are listed
+- [ ] Live temperatures appear for the nozzle and the bed, and they **move** (a frozen value is stale)
 - [ ] An application key generated: **Settings → Application Keys →
       Generate**, named `sv02-control`, saved somewhere safe
 
@@ -220,9 +221,9 @@ printer's port and carries no data. It looks identical to a good cable. If no
       installed on the Pi itself)
 - [ ] `npm install` run **on the Pi**
 - [ ] `.env` created on the Pi from `.env.example` and filled in
-- [ ] `npm run check` all green, with `Heaters reported: tool0, tool1, bed`
+- [ ] `npm run check` all green, with `Heaters reported: bed, tool0`
 - [ ] `npm start`, dashboard reachable at `http://octopi.local:8088`
-- [ ] Logged in, camera visible, both nozzle temperatures live
+- [ ] Logged in, camera visible, nozzle and bed temperatures live
 
 ## Phase 6 — Make it permanent
 
@@ -305,7 +306,7 @@ for the reasoning.
 | Load-cell "nozzle as probe" like a Prusa MK4 | Weeks — a real engineering project | Low, given a BLTouch solves the actual problem |
 
 Full analysis of the probe question, including what Prusa is actually doing
-and why the SV02's dual-hotend carriage makes it hard, is in
+and what it would take on the SV02's toolhead, is in
 [nozzle-probe-research.md](../sv02-control/docs/nozzle-probe-research.md).
 
 ## Risk register

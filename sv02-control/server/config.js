@@ -105,6 +105,9 @@ export const config = {
 
   // Server-side poll interval feeding the monitor + the /api/status cache.
   pollIntervalMs: 2500,
+
+  // How often to re-read the printer profile (extruder count, shared nozzle).
+  profileRefreshMs: num('PROFILE_REFRESH_MS', 60000),
 };
 
 /**

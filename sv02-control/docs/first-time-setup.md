@@ -292,7 +292,7 @@ You want to see:
 ```
 OctoPrint  (http://localhost:5000)
   ✓ Connected in 141ms — OctoPrint 1.10.0
-  ✓ Printer connected. Heaters reported: tool0, tool1, bed
+  ✓ Printer connected. Heaters reported: bed, tool0
 
 Camera  (http://192.168.2.141:8080/video)
   ✓ Connected in 109ms — multipart/x-mixed-replace

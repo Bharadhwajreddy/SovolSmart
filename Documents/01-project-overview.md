@@ -155,7 +155,7 @@ works, with no extra configuration.
 | Capability | Detail |
 |---|---|
 | **Live camera** | MJPEG relayed from the phone, with automatic reconnection (2s, 4s, 8s, 16s, then every 20s) and a still-frame fallback if the stream will not hold. |
-| **Live temperatures** | One card per heater the printer actually reports. On a dual-extruder SV02 that is `tool0`, `tool1` and `bed`. Nothing is hardcoded — a single-hotend machine gets one card. |
+| **Live temperatures** | One card per heater the printer actually has. The SV02's two extruder drives share **one** nozzle, so that is a nozzle card and a bed card. Whether a nozzle is shared comes from the OctoPrint printer profile — nothing is hardcoded, and a machine with independent hotends gets a card each. |
 | **Progress** | Filename, percentage, elapsed, remaining. |
 | **Controls** | Pause, resume, cancel (confirmed), emergency stop (`M112`, confirmed). |
 | **Upload and print** | Drop a `.gcode` file, it uploads to OctoPrint and starts. 250 MB cap. |
@@ -217,7 +217,7 @@ Being explicit about the boundaries is more useful than a feature list.
 | **Tailscale** | A private network overlay. Your phone and your Pi behave as if on the same LAN, from anywhere, with nothing exposed publicly. |
 | **ntfy** | A free push-notification service. You pick a secret topic name; anything posted to it appears on your phone. |
 | **Gate** | A step in the runbook you must not proceed past until it passes. |
-| **`tool0` / `tool1` / `bed`** | OctoPrint's names for the first hotend, second hotend, and heated bed. A healthy SV02 reports all three. |
+| **`tool0` / `tool1` / `bed`** | OctoPrint's names for the first extruder, second extruder and heated bed. On the SV02 both extruders feed one shared nozzle, so `tool0` and `tool1` are the same heater. |
 
 ---
 

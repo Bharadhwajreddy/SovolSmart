@@ -141,12 +141,14 @@ device is lost.
 **Decision:** the sensor list is built from whatever OctoPrint reports matching
 `tool<n>` or `bed`.
 
-**Rejected:** hardcoding two hotends and a bed, since the SV02 is dual-extruder.
+**Rejected:** hardcoding the SV02's layout.
 
-**Why:** it costs nothing and it means a single-hotend conversion, a firmware
-that reports only one tool, or a different printer entirely all work with the
-same code. Dual-extruder support falls out of the general case rather than
-being a special case.
+**Why:** it costs nothing — and the hardcoded version would have been wrong.
+The SV02 was first assumed to have two hotends; its firmware reports
+`EXTRUDER_COUNT:1`, two drives feeding one shared nozzle. Because the heater
+list comes from what OctoPrint reports, and whether the nozzle is shared comes
+from the printer profile, both layouts work with the same code. See
+[08 — Deployment log](08-deployment-log.md#2-correction-the-sv02-has-one-shared-nozzle-not-two-hotends).
 
 ## Hardware decisions
 
@@ -327,8 +329,8 @@ fork-and-pray.
 
 But be honest about the cost: it needs Klipper, a load cell and ADC, and a
 **redesigned toolhead mount on a flexure** so contact force transfers into the
-sensor and nothing else does — and the SV02's dual-hotend carriage means
-solving that twice, or accepting that only one nozzle ever probes.
+sensor and nothing else does. (The SV02's single shared nozzle at least means
+solving that once, not once per nozzle.)
 
 **A BLTouch solves the problem you actually have.** Treat this as a project for
 later, and only if you convert to Klipper for other reasons. The full analysis

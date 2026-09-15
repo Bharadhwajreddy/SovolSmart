@@ -1,13 +1,21 @@
 /**
  * A stand-in for OctoPrint, so the app can be tested without a printer.
  *
- * Modelled on a dual-extruder SV02: tool0, tool1 and bed. Send SIGUSR2 to
- * toggle a thermal fault on tool0.
+ * Reports tool0, tool1 and bed by default (two independent hotends), which
+ * exercises multi-heater handling. The real SV02 is a 2-in-1-out machine with
+ * one shared nozzle -- call setProfile({ sharedNozzle: true }) to model it.
+ * Send SIGUSR2 to toggle a thermal fault on tool0.
  */
 import http from 'node:http';
 import { pathToFileURL } from 'node:url';
 
 let mode = process.env.MOCK_MODE || 'printing';
+
+/**
+ * The printer profile's toolhead. With a shared nozzle, OctoPrint reports the
+ * single heater under every tool key, so tool1 mirrors tool0 exactly.
+ */
+let profile = { count: 2, sharedNozzle: false };
 
 /** Every request body the app sent, so tests can assert on what was sent. */
 export const received = [];
@@ -15,7 +23,9 @@ export const received = [];
 const printer = () => ({
   temperature: {
     tool0: { actual: mode === 'anomaly' ? 150.2 : 209.8, target: 210, offset: 0 },
-    tool1: { actual: 24.3, target: 0, offset: 0 },
+    tool1: profile.sharedNozzle
+      ? { actual: mode === 'anomaly' ? 150.2 : 209.8, target: 210, offset: 0 }
+      : { actual: 24.3, target: 0, offset: 0 },
     bed: { actual: 59.7, target: 60, offset: 0 },
   },
   state: {
@@ -67,6 +77,19 @@ export function start(port = 5099) {
       if (url.pathname === '/api/printer') return json(200, printer());
       if (url.pathname === '/api/job') return json(200, job());
       if (url.pathname === '/api/version') return json(200, { server: '1.10.0' });
+      if (url.pathname === '/api/printerprofiles') {
+        return json(200, {
+          profiles: {
+            _default: {
+              id: '_default',
+              name: 'Sovol SV02',
+              default: true,
+              current: true,
+              extruder: { count: profile.count, sharedNozzle: profile.sharedNozzle },
+            },
+          },
+        });
+      }
       if (url.pathname === '/api/files/local') return json(200, fileListing);
       return json(404, { error: 'not found' });
     }
@@ -118,6 +141,7 @@ export function start(port = 5099) {
 
 export const setMode = (next) => { mode = next; };
 export const getMode = () => mode;
+export const setProfile = (next) => { profile = { ...profile, ...next }; };
 
 // Allow running standalone: `node test/mocks/octoprint.mjs`
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {

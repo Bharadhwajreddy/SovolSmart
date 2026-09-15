@@ -22,7 +22,7 @@ wrong.
 
 | Component | Actual value |
 |---|---|
-| Printer | Sovol SV02, **two independent hotends**, two thermistors |
+| Printer | Sovol SV02, **2-in-1-out**: two extruder drives, **one** shared nozzle, one thermistor (`EXTRUDER_COUNT:1`) |
 | Host | Raspberry Pi 3 Model B Rev 1.2, `armv7l`, 869 MB RAM |
 | OS | Raspbian GNU/Linux 12 (bookworm), OctoPi 1.1.0 |
 | OctoPrint | 1.11.2, connected `/dev/ttyUSB0` @ **115200**, auto-connect on boot |
@@ -56,24 +56,40 @@ success. Every downstream check passes while the printer sits untouched.
 
 > **Always confirm the port reads `/dev/ttyUSB0`, never `/tmp/printer`.**
 
-### 2. "Shared nozzle" silently discarded the second hotend
+### 2. Correction: the SV02 has one shared nozzle, not two hotends
 
-**Symptom:** `tool0` and `tool1` reported *exactly* the same value, to two
-decimal places, every single sample.
+> **This section was wrong in the first version of this log**, and the wrong
+> version drove a configuration change. It is kept as a correction rather than
+> quietly rewritten, because how it went wrong is the useful part.
 
-**Cause:** the setup wizard left **Shared nozzle** ticked. That tells OctoPrint
-there is one heater, so it throws away `tool1`'s real reading and reports
-`tool0`'s value in both slots.
+**What was first concluded:** `tool0` and `tool1` read exactly the same value,
+so "shared nozzle" must be hiding a second thermistor. The setting was unticked,
+`tool1` then showed `21.56 °C` against `tool0`'s `21.68 °C`, and that difference
+was taken as proof of two independent sensors.
 
-**Why it matters:** the dashboard would have shown two temperature cards with
-plausible numbers, while the second hotend was **not monitored at all**. A
-thermal fault on it would have been invisible to the anomaly detector — the
-exact failure this project exists to catch.
+**What was actually true:** the `21.56 °C` never moved. It held to two decimal
+places across every sample while `tool0` jittered — a stale value left in
+OctoPrint's temperature table, not a live reading. After the next reboot `tool1`
+vanished altogether. The firmware settles it:
 
-**Fix:** untick Shared nozzle. Two independent readings appeared immediately
-(`21.68 / 21.56`, drifting separately — real thermistor noise).
+```
+FIRMWARE_NAME:Marlin 2.0.x … EXTRUDER_COUNT:1
+Recv: ok T:19.65 /0.00 B:20.39 /0.00 @:0 B@:0
+```
 
-> **Two real thermistors never agree to two decimal places. If they do, this is why.**
+One extruder in firmware, one `T:` reading. The SV02 is **2-in-1-out**: two
+filament drives feeding one mixing nozzle with one heater and one thermistor.
+The wizard's original **shared nozzle: ticked** was correct.
+
+**Fix:** the profile went back to 2 extruders with shared nozzle ticked, and the
+app now reads the toolhead from the printer profile. A shared nozzle is shown
+as **one** heater, so one fault raises one alert rather than two, while both
+drives — `T0` and `T1` — stay available for extrusion, with the cold-extrusion
+check applied to the shared heater.
+
+> **A frozen reading is not a sensor.** Real thermistors jitter. If a value holds
+> to two decimal places sample after sample, it is stale. When the hardware
+> question matters, ask the firmware: `M115` reports `EXTRUDER_COUNT` directly.
 
 ### 3. NodeSource has dropped 32-bit ARM entirely
 
@@ -178,7 +194,7 @@ PASS  dashboard is VISIBLE after signing in    ← it was there all along
 | Change | Why |
 |---|---|
 | `[hidden] { display: none !important; }` | Problem 5. Every show/hide in `app.js` depends on it. |
-| Rebuilt UI: dark theme, five tabs | The original was functional but plain |
+| Rebuilt UI with five tabs — first dark, then the light instrument panel | The original was functional but plain |
 | Jog pad, per-axis homing | Parity with OctoPrint's most-used control |
 | Extrude / retract with hotend picker | Filament changes and purging |
 | Live temperature chart, server-side history | A failing heater is obvious at a glance; history survives reload |
@@ -187,6 +203,8 @@ PASS  dashboard is VISIBLE after signing in    ← it was there all along
 | Node install rewritten in 4 documents | Problem 3 — the published command is broken on this hardware |
 | Repo URL corrected to `SovolSmart` | Was pointing at a repository that does not exist |
 | `pathToFileURL()` in the test mocks | The POSIX-only guard silently no-opped on Windows |
+| Toolhead read from the printer profile (`getToolhead()`) | Problem 2 — a shared nozzle is one heater; both drives stay extrudable |
+| Light instrument-panel UI, self-hosted IBM Plex | Categorical palette validated for colour-blind separation; E-STOP pinned outside every tab |
 
 **New endpoints.** Still an allowlist, never a G-code pass-through: the browser
 picks a verb and sends a **number**, the server decides the G-code and clamps
@@ -240,24 +258,24 @@ send it over plain HTTP.
 
 ## Verification evidence
 
-**Tests: 50 passing, 0 failing** (was 37; 13 added for the new endpoints,
-covering clamping, the `G91`/`G90` wrapper, the cold-extrusion refusal, and
-both the mid-print refusals and the mid-print allowances).
+**Tests: 56 passing, 0 failing** (was 37; 13 added for the new endpoints —
+clamping, the `G91`/`G90` wrapper, the cold-extrusion refusal, and both the
+mid-print refusals and allowances — and 6 for the shared nozzle).
 
 **`npm run check` on the Pi:**
 
 ```
 OctoPrint  (http://localhost:5000)
   ✓ Connected in 476ms — OctoPrint 1.11.2
-  ✓ Printer connected. Heaters reported: bed, tool0, tool1
+  ✓ Printer connected. Heaters reported: bed, tool0
 Notifications  (https://ntfy.sh/...)
   ✓ Test notification sent
 ```
 
-**Real-browser test through the public URL**, phone viewport — login, dashboard
-visibility, three heater cards, two nozzles reading *different* values, all
-five tabs, six jog buttons, both hotends in the extruder picker, and the chart
-sized correctly.
+**Real-browser test through the public URL**, phone and desktop viewports —
+login, dashboard visibility, one card per real heater (nozzle and bed), every
+extruder drive in the picker, all five tabs, six jog buttons, E-STOP reachable
+from every tab, and the chart's crosshair tooltip and table view.
 
 **Power under load:** `0x50000` — no new under-voltage through the Node install
 and `npm install`.
@@ -273,7 +291,7 @@ and `npm install`.
       own eventually and the camera will die silently weeks later with no
       obvious cause. The most common long-term failure of this setup.
 - [ ] **Tailscale Serve and Funnel** — awaiting the one-click enable.
-- [ ] **Reboot test.** Not yet run end to end.
+- [x] **Reboot test.** Power-cycled by the owner; everything came back on its own.
 - [ ] **Dashboard password.** Currently 8 numeric digits on a public URL.
       Brute force is throttled to 8 attempts per 15 minutes per IP and the
       quick-tunnel hostname is unguessable, but it is thin if the link is ever

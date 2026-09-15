@@ -131,6 +131,24 @@ export const getJob = () => octoFetch('/api/job');
 export const getConnection = () => octoFetch('/api/connection');
 export const getVersion = () => octoFetch('/api/version');
 
+/**
+ * The active printer profile's toolhead: how many extruder drives, and whether
+ * they share one nozzle. The SV02 is a 2-in-1-out machine -- two drives feeding
+ * a single nozzle with a single heater -- which OctoPrint models as
+ * extruder.count = 2 with sharedNozzle = true, and then reports that one heater
+ * under both `tool0` and `tool1`.
+ */
+export async function getToolhead() {
+  const data = await octoFetch('/api/printerprofiles');
+  const profiles = Object.values(data?.profiles || {});
+  const active = profiles.find((p) => p.current) || profiles.find((p) => p.default) || profiles[0];
+  const count = Number(active?.extruder?.count);
+  return {
+    extruders: Number.isInteger(count) && count > 0 ? count : 1,
+    sharedNozzle: Boolean(active?.extruder?.sharedNozzle),
+  };
+}
+
 export const pausePrint = () => postJson('/api/job', { command: 'pause', action: 'pause' });
 export const resumePrint = () => postJson('/api/job', { command: 'pause', action: 'resume' });
 export const cancelPrint = () => postJson('/api/job', { command: 'cancel' });

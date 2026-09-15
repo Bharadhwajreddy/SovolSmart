@@ -6,10 +6,10 @@ temperatures, the progress bar, and the buttons that matter.
 
 - **Live camera** from the IP Webcam app on your phone, front and centre, with
   automatic reconnection when the phone drops off WiFi.
-- **Live temperatures** for every heater the printer reports — the SV02 is
-  dual-extruder, so both nozzles and the bed appear, each individually
-  settable. Nothing is hardcoded: if your printer reports one hotend, you get
-  one card.
+- **Live temperatures** for every heater the printer has. The SV02's two
+  extruder drives share one nozzle, so you get a nozzle card and a bed card,
+  each settable; a printer with independent hotends gets a card per hotend.
+  Nothing is hardcoded — the layout comes from OctoPrint's printer profile.
 - **Progress** — filename, percentage, elapsed and remaining time.
 - **Controls** — pause, resume, cancel (with a confirmation), and an emergency
   stop that sends `M112`.
@@ -306,7 +306,7 @@ it runs anywhere with no printer attached:
 npm test
 ```
 
-It covers authentication, the dual-extruder sensor handling, pause/resume/
+It covers authentication, multi-heater and shared-nozzle sensor handling, pause/resume/
 cancel round-trips, `M112`, the G-code allowlist, upload rejection paths, the
 camera relay (both still frames and MJPEG), temperature-anomaly detection and
 recovery, and OctoPrint going offline mid-print.

@@ -279,8 +279,9 @@ frontend needs — the browser never sees OctoPrint's own JSON:
       actual: 209.8, target: 210, max: 260,
       deviatingSince: null,             // ISO timestamp while being timed
       alerting: false },                // true once the alert has fired
-    // … tool1, bed
+    // … tool1 (independent hotends only), bed
   ],
+  toolhead: { extruders: 2, sharedNozzle: true },   // from the printer profile
   job: {
     file: 'benchy_v3.gcode',
     completion: 42.7,
@@ -393,8 +394,17 @@ and clears both, so a *second*, later fault on the same sensor can alert again.
 **Sensors are discovered, never assumed.** `listSensors()` filters the reported
 temperature keys with `/^(tool\d+|bed)$/` and sorts tools before the bed,
 numerically. Labels adapt: one hotend is `Nozzle`, two become `Nozzle 1` and
-`Nozzle 2`. Dual-extruder support is not a feature — it is what you get for
-free by not hardcoding.
+`Nozzle 2`.
+
+**A shared nozzle is one heater.** The SV02 is 2-in-1-out: two drives, one
+nozzle, one thermistor (`M115` reports `EXTRUDER_COUNT:1`). OctoPrint models
+that as two extruders with `sharedNozzle`, and reports the single heater under
+both `tool0` and `tool1`. `getToolhead()` reads the printer profile — again
+every `PROFILE_REFRESH_MS` (default 60 s) and straight after a reconnect — and
+`listSensors()` then keeps only `tool0`. Otherwise one heater would render twice
+and a single fault would raise two alerts. Drives and heaters stay separate:
+`snapshot.toolhead.extruders` still builds the extrusion picker, and extruding
+on any drive checks the shared heater's temperature.
 
 ## Notifications
 
@@ -635,7 +645,7 @@ against what the user actually typed. Three tests cover this
 
 ## Test strategy
 
-`npm test` runs `test/run.mjs`: **37 end-to-end tests, currently all passing**.
+`npm test` runs `test/run.mjs`: **56 end-to-end tests, currently all passing**.
 It spawns the real server as a child process on port 8099 against a mock
 OctoPrint (`:5099`) and a mock camera (`:5098`). No printer, no network, no
 mocking of the app's own internals — the tests drive real HTTP.
@@ -653,9 +663,12 @@ mocking of the app's own internals — the tests drive real HTTP.
 | Camera relay | 3 | Snapshot is a real JPEG; MJPEG relays multiple frames; the camera requires auth |
 | Failure detection | 3 | Sustained deviation raises an anomaly; it appears on the sensor; recovery clears it |
 | OctoPrint downtime | 3 | Clean offline state, not a crash; controls fail cleanly; the server still serves |
+| Motion and tuning | 13 | `G91`/`G90` wrapper; jog clamped; unknown axis refused; per-axis and full homing; cold extrusion refused; tool selected first; fan PWM and off; speed and flow clamped; babystep clamped; history recorded; motion refused mid-print; tuning allowed mid-print |
+| Shared nozzle | 6 | Toolhead read from the profile; a shared nozzle is one heater; history records it once; drive 2 extrudes through it; a missing drive is refused; independent hotends restored |
 
-The mock OctoPrint models a dual-extruder SV02 — `tool0` at 210 °C, `tool1`
-cold, `bed` at 60 °C — and records every request body so tests can assert on
+The mock OctoPrint reports two independent hotends by default — `tool0` at
+210 °C, `tool1` cold, `bed` at 60 °C, switchable to the SV02's real shared
+nozzle with `setProfile()` — and records every request body so tests can assert on
 what was actually sent. `SIGUSR2` toggles a thermal fault on `tool0`, which is
 how the anomaly tests induce one.
 
@@ -738,7 +751,7 @@ through `/api/config` and `snapshot.anomalyWatch`.
 | NDJSON log file | SQLite / `better-sqlite3` | Native compilation on a Pi is slow and breaks on Node upgrades. A text file is `cat`-able, `grep`-able and `jq`-able. |
 | G-code allowlist | A terminal in the UI | This is reachable from the internet behind one password. Five known-safe commands is a far smaller blast radius. |
 | Stateless HMAC sessions | A session store | Editing `.env` requires a restart; a store would log you out every time. |
-| Discover heaters | Hardcode two tools and a bed | Costs nothing, and dual-extruder support falls out of the general case. |
+| Discover heaters; read the toolhead from the profile | Hardcode the SV02's layout | Costs nothing — and the hardcoded guess (two hotends) turned out to be wrong. Independent hotends and a shared nozzle both fall out of the general case. |
 | Chained `setTimeout` | `setInterval` | A chained timeout cannot overlap itself when OctoPrint is slow. |
 | Refuse to boot on bad config | Start and fail later | A clear message at startup beats a confusing failure at 2 a.m. |
 
