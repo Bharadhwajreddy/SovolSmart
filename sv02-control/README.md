@@ -10,6 +10,10 @@ temperatures, the progress bar, and the buttons that matter.
   extruder drives share one nozzle, so you get a nozzle card and a bed card,
   each settable; a printer with independent hotends gets a card per hotend.
   Nothing is hardcoded — the layout comes from OctoPrint's printer profile.
+- **Layer view** — a 2D top-down view of the layer being printed beside a 3D
+  view of everything printed so far, with the nozzle marked on both. Drawn
+  from the sliced file and OctoPrint's byte offset into it, so it is real,
+  not a simulation — and it works when the camera phone is asleep.
 - **Progress** — filename, percentage, elapsed and remaining time.
 - **Controls** — pause, resume, cancel (with a confirmation), and an emergency
   stop that sends `M112`.

@@ -20,6 +20,7 @@ lines of ES-module JavaScript with two runtime dependencies (`express`,
 - [Anomaly detection](#anomaly-detection)
 - [Notifications](#notifications)
 - [The camera relay](#the-camera-relay)
+- [The print visualiser](#the-print-visualiser)
 - [Security model](#security-model)
 - [The frontend](#the-frontend)
 - [Data and persistence](#data-and-persistence)
@@ -90,6 +91,7 @@ returns it. A test asserts this (`the API key is never exposed to the client`,
 | [`server/auth.js`](../sv02-control/server/auth.js) | 142 | Stateless HMAC session cookie, constant-time password check, per-IP login throttle | `handleLogin`, `handleLogout`, `requireAuth`, `isAuthenticated` |
 | [`server/notify.js`](../sv02-control/server/notify.js) | 82 | ntfy push, fire-and-forget | `push`, `notifyPrintStarted`, `notifyPrintDone`, `notifyPrintFailed`, `notifyAnomaly`, `notifyPrinterOffline` |
 | [`server/log.js`](../sv02-control/server/log.js) | 79 | Rotating NDJSON event log plus an in-memory ring of 200 | `logEvent`, `recentEvents`, `readEventsFromDisk` |
+| [`server/gcode.js`](../sv02-control/server/gcode.js) | 250 | G-code parser for the visualiser: per-layer paths, the byte range of each layer, and the position lookup | `parseGcode`, `locate`, `pointAlongLayer`, `serialiseModel`, `MAX_PARSE_BYTES` |
 
 Dependency direction is strictly downward — nothing imports `index.js`:
 
@@ -223,6 +225,7 @@ Get this order wrong and an unknown API route returns the HTML shell with a
 | `POST` | `/api/files/print` | ✓ | Select and print a stored file |
 | `DELETE` | `/api/files` | ✓ | Delete a stored file |
 | `POST` | `/api/upload` | ✓ | Multipart upload, optionally start printing |
+| `GET` | `/api/gcode/model` | ✓ | Layer geometry of the file being printed, gzipped |
 
 ### Error handling
 
@@ -479,6 +482,42 @@ response, set `Cache-Control: no-store`, done. Its URL is derived automatically
 from the stream URL by swapping the path to `/shot.jpg`, which is what the IP
 Webcam app serves.
 
+## The print visualiser
+
+When the camera is unavailable, the dashboard can still show what the printer
+is doing — drawn from the sliced file rather than imagined.
+
+`server/gcode.js` parses the G-code into per-layer paths and, crucially, **the
+byte range each layer occupies**. OctoPrint reports `job.progress.filepos`, its
+byte offset into that same file, so `locate(model, filepos)` maps the printer's
+real position back to a layer and to a point along that layer's path. Nothing
+is simulated or timed: if the print pauses, the marker stops.
+
+| Piece | Where |
+|---|---|
+| Parser, `locate()`, `serialiseModel()` | `sv02-control/server/gcode.js` |
+| Download and cache, off the poll loop | `ensureModel()` in `server/monitor.js` |
+| Position in the snapshot | `visualState()` → `snapshot.visual` |
+| Geometry endpoint | `GET /api/gcode/model`, gzipped |
+| 2D and 3D drawing | the visualiser section of `public/app.js` |
+
+**Deliberate limits**, all stated in the parser's own header: G0/G1 moves with
+G90/G91, M82/M83 and G92 honoured; arcs drawn as their chord; only extruding
+moves become geometry, so travel moves break the path instead of drawing one.
+Long files are decimated — points closer together than a size-derived tolerance
+are merged — and capped, so a 20 MB file costs about what a 1 MB one does.
+Files over 25 MB are refused outright: the Pi has 1 GB of RAM.
+
+**Parsing never blocks the poll loop.** `ensureModel()` starts a download in
+the background when the loaded file changes and fills the cache when it
+finishes; temperature monitoring carries on regardless, and a failure leaves
+the visualiser saying so rather than breaking the dashboard.
+
+**Drawing is split by cost.** Every printed layer is rendered into an offscreen
+canvas only when the shown layer changes; each animation frame just blits that
+canvas and draws the nozzle marker, eased toward its reported position. The 3D
+view samples at most 60 layers so a 400-layer print stays cheap on a phone.
+
 ## Security model
 
 ### What protects what
@@ -645,7 +684,7 @@ against what the user actually typed. Three tests cover this
 
 ## Test strategy
 
-`npm test` runs `test/run.mjs`: **56 end-to-end tests, currently all passing**.
+`npm test` runs `test/run.mjs`: **62 end-to-end tests, currently all passing**.
 It spawns the real server as a child process on port 8099 against a mock
 OctoPrint (`:5099`) and a mock camera (`:5098`). No printer, no network, no
 mocking of the app's own internals — the tests drive real HTTP.
@@ -665,6 +704,7 @@ mocking of the app's own internals — the tests drive real HTTP.
 | OctoPrint downtime | 3 | Clean offline state, not a crash; controls fail cleanly; the server still serves |
 | Motion and tuning | 13 | `G91`/`G90` wrapper; jog clamped; unknown axis refused; per-axis and full homing; cold extrusion refused; tool selected first; fan PWM and off; speed and flow clamped; babystep clamped; history recorded; motion refused mid-print; tuning allowed mid-print |
 | Shared nozzle | 6 | Toolhead read from the profile; a shared nozzle is one heater; history records it once; drive 2 extrudes through it; a missing drive is refused; independent hotends restored |
+| Print visualiser | 6 | Layers, bounds and byte ranges; relative moves and G92; an offset past the end clamps to the last layer; the model becomes available; the endpoint returns geometry; it requires a login |
 
 The mock OctoPrint reports two independent hotends by default — `tool0` at
 210 °C, `tool1` cold, `bed` at 60 °C, switchable to the SV02's real shared

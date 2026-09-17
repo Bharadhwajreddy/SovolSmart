@@ -1,14 +1,16 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import zlib from 'node:zlib';
 import express from 'express';
 import multer from 'multer';
 
 import { config, validateConfig, warnings, ROOT } from './config.js';
 import { logEvent, recentEvents, readEventsFromDisk } from './log.js';
 import { handleLogin, handleLogout, requireAuth, isAuthenticated } from './auth.js';
-import { startMonitor, getSnapshot, getHistory } from './monitor.js';
+import { startMonitor, getSnapshot, getHistory, getModel } from './monitor.js';
 import { proxyStream, proxySnapshot } from './camera.js';
 import * as octo from './octoprint.js';
+import { serialiseModel } from './gcode.js';
 import { OctoPrintError } from './octoprint.js';
 
 // --- Boot checks -----------------------------------------------------------
@@ -364,6 +366,25 @@ app.post('/api/control/babystep', route(async (req, res) => {
   await octo.sendCommand('M290 Z' + delta);
   logEvent('info', 'babystep', 'Z babystep ' + (delta > 0 ? '+' : '') + delta + 'mm.');
   return res.json({ ok: true, delta });
+}));
+
+/**
+ * The parsed layer geometry of the file being printed. Sent gzipped: layer
+ * paths compress several times over, which matters on a phone connection.
+ */
+app.get('/api/gcode/model', route(async (_req, res) => {
+  const ready = getModel();
+  if (!ready) {
+    const { state, error } = getSnapshot().visual;
+    return res.status(409).json({ error: error || 'No layer model available yet.', state });
+  }
+
+  const payload = JSON.stringify({ key: ready.key, ...serialiseModel(ready.model) });
+  const body = zlib.gzipSync(payload);
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Encoding', 'gzip');
+  res.setHeader('Cache-Control', 'no-store');
+  return res.end(body);
 }));
 
 app.get('/api/history', (req, res) => {

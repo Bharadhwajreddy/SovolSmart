@@ -147,10 +147,45 @@
       </div>
     </section>
 
-    <!-- 02 Thermal ------------------------------------------------------->
-    <section class="module mod-thermal panel active" data-panel="monitor" aria-labelledby="h-thermal">
+    <!-- 02 Layer view ---------------------------------------------------->
+    <section class="module mod-viz panel active" data-panel="monitor" aria-labelledby="h-viz">
       <header class="mod-head">
         <span class="mod-idx">02</span>
+        <h2 id="h-viz">Layer view</h2>
+        <span class="code" id="viz-code">no file loaded</span>
+        <div class="mod-tools">
+          <button id="viz-follow" class="btn btn-ghost btn-sm" type="button" aria-pressed="true">Following print</button>
+        </div>
+      </header>
+
+      <div class="viz-grid">
+        <div class="viz-pane">
+          <canvas id="viz-2d" role="img" aria-label="Top-down view of the layer being printed"></canvas>
+          <span class="viz-tag">2D · this layer</span>
+          <p class="viz-empty" id="viz-empty-2d">No file loaded.</p>
+        </div>
+        <div class="viz-pane">
+          <canvas id="viz-3d" role="img" aria-label="Three-dimensional view of the layers printed so far"></canvas>
+          <span class="viz-tag">3D · printed so far</span>
+          <p class="viz-empty" id="viz-empty-3d">No file loaded.</p>
+        </div>
+      </div>
+
+      <div class="viz-bar">
+        <div class="viz-readout">
+          <span>Layer <b id="viz-layer">—</b></span>
+          <span>Z <b id="viz-z">—</b></span>
+          <span>X <b id="viz-x">—</b></span>
+          <span>Y <b id="viz-y">—</b></span>
+        </div>
+        <input id="viz-slider" class="slider" type="range" min="1" max="1" value="1" aria-label="Layer to show">
+      </div>
+    </section>
+
+    <!-- 03 Thermal ------------------------------------------------------->
+    <section class="module mod-thermal panel active" data-panel="monitor" aria-labelledby="h-thermal">
+      <header class="mod-head">
+        <span class="mod-idx">03</span>
         <h2 id="h-thermal">Thermal</h2>
         <span class="code" id="watch-code">WATCH —</span>
         <div class="mod-tools">
@@ -160,10 +195,10 @@
       <div id="temps" class="heater-grid"><p class="empty-row">Waiting for the printer…</p></div>
     </section>
 
-    <!-- 03 Temperature log ----------------------------------------------->
+    <!-- 04 Temperature log ----------------------------------------------->
     <section class="module mod-chart panel active" data-panel="monitor" aria-labelledby="h-chart">
       <header class="mod-head">
-        <span class="mod-idx">03</span>
+        <span class="mod-idx">04</span>
         <h2 id="h-chart">Temperature log</h2>
         <div class="mod-tools">
           <div class="seg" id="chart-range" role="group" aria-label="Time range">
@@ -183,10 +218,10 @@
       <div class="chart-table" id="chart-table" hidden></div>
     </section>
 
-    <!-- 04 Motion -------------------------------------------------------->
+    <!-- 05 Motion -------------------------------------------------------->
     <section class="module mod-motion panel" data-panel="motion" aria-labelledby="h-motion">
       <header class="mod-head">
-        <span class="mod-idx">04</span>
+        <span class="mod-idx">05</span>
         <h2 id="h-motion">Motion</h2>
         <span class="code">G91 relative · G90 restore</span>
       </header>
@@ -227,10 +262,10 @@
       </div>
     </section>
 
-    <!-- 05 Extrusion ----------------------------------------------------->
+    <!-- 06 Extrusion ----------------------------------------------------->
     <section class="module mod-extruder panel" data-panel="motion" aria-labelledby="h-extrude">
       <header class="mod-head">
-        <span class="mod-idx">05</span>
+        <span class="mod-idx">06</span>
         <h2 id="h-extrude">Extrusion</h2>
         <span class="code">G1 E · F300 (5 mm/s)</span>
       </header>
@@ -258,10 +293,10 @@
       </div>
     </section>
 
-    <!-- 06 Tuning -------------------------------------------------------->
+    <!-- 07 Tuning -------------------------------------------------------->
     <section class="module mod-tune panel" data-panel="tune" aria-labelledby="h-tune">
       <header class="mod-head">
-        <span class="mod-idx">06</span>
+        <span class="mod-idx">07</span>
         <h2 id="h-tune">Tuning</h2>
         <span class="code">Live · safe mid-print</span>
       </header>
@@ -316,10 +351,10 @@
       </div>
     </section>
 
-    <!-- 07 Maintenance --------------------------------------------------->
+    <!-- 08 Maintenance --------------------------------------------------->
     <section class="module mod-maint panel" data-panel="tune" aria-labelledby="h-maint">
       <header class="mod-head">
-        <span class="mod-idx">07</span>
+        <span class="mod-idx">08</span>
         <h2 id="h-maint">Maintenance</h2>
         <span class="code">Server allowlist</span>
       </header>
@@ -327,10 +362,10 @@
       <p class="mod-note pad">Auto bed level runs G28 then G29, and does nothing until a probe such as a BLTouch is fitted.</p>
     </section>
 
-    <!-- 08 Job files ----------------------------------------------------->
+    <!-- 09 Job files ----------------------------------------------------->
     <section class="module mod-files panel" data-panel="files" aria-labelledby="h-files">
       <header class="mod-head">
-        <span class="mod-idx">08</span>
+        <span class="mod-idx">09</span>
         <h2 id="h-files">Job files</h2>
         <span class="code">.gcode · .gco · .g · 250 MB</span>
       </header>
@@ -359,10 +394,10 @@
       <ul id="file-list" class="file-table"><li class="empty-row">Loading…</li></ul>
     </section>
 
-    <!-- 09 Event log ----------------------------------------------------->
+    <!-- 10 Event log ----------------------------------------------------->
     <section class="module mod-log panel" data-panel="log" aria-labelledby="h-log">
       <header class="mod-head">
-        <span class="mod-idx">09</span>
+        <span class="mod-idx">10</span>
         <h2 id="h-log">Event log</h2>
         <span class="code">Newest first</span>
         <div class="mod-tools">

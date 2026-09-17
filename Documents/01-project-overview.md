@@ -156,6 +156,7 @@ works, with no extra configuration.
 |---|---|
 | **Live camera** | MJPEG relayed from the phone, with automatic reconnection (2s, 4s, 8s, 16s, then every 20s) and a still-frame fallback if the stream will not hold. |
 | **Live temperatures** | One card per heater the printer actually has. The SV02's two extruder drives share **one** nozzle, so that is a nozzle card and a bed card. Whether a nozzle is shared comes from the OctoPrint printer profile — nothing is hardcoded, and a machine with independent hotends gets a card each. |
+| **Layer view** | A 2D view of the layer being printed beside a 3D view of the stack so far, with the nozzle marked — drawn from the sliced file and OctoPrint's byte position in it. Works when the camera does not. |
 | **Progress** | Filename, percentage, elapsed, remaining. |
 | **Controls** | Pause, resume, cancel (confirmed), emergency stop (`M112`, confirmed). |
 | **Upload and print** | Drop a `.gcode` file, it uploads to OctoPrint and starts. 250 MB cap. |

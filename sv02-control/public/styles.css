@@ -1057,6 +1057,49 @@ input[type=range]::-moz-range-thumb    { width: 14px; height: 14px; border-radiu
 .toast.ok::before    { background: var(--good); }
 .toast.error::before { background: var(--critical); }
 
+/* --- 02 Layer view -------------------------------------------------------- */
+
+.viz-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 14px; }
+@media (min-width: 560px) { .viz-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+.viz-pane {
+  position: relative;
+  border: 1px solid var(--hair);
+  border-radius: var(--r-sm);
+  background: var(--surface-raised);
+  overflow: hidden;
+}
+.viz-pane canvas { display: block; width: 100%; height: 250px; }
+.viz-tag {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  padding: 2px 7px;
+  border-radius: 3px;
+  background: rgba(253, 252, 249, .86);
+  border: 1px solid var(--hair);
+  font: 500 10px/1.6 var(--mono);
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.viz-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--muted);
+  background: var(--surface);
+}
+.viz-bar { display: flex; align-items: center; gap: 14px; padding: 0 14px 14px; flex-wrap: wrap; }
+.viz-bar .slider { flex: 1 1 180px; min-width: 140px; }
+.viz-readout { display: flex; gap: 14px; flex-wrap: wrap; }
+.viz-readout span { font: 500 11px/1 var(--mono); letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.viz-readout b { font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--ink); font-variant-numeric: tabular-nums; }
+
 /* --- Layout by width ------------------------------------------------------ */
 
 /* Phone: one column, tabbed, commands pinned to the thumb zone. */
@@ -1104,6 +1147,7 @@ input[type=range]::-moz-range-thumb    { width: 14px; height: 14px; border-radiu
     grid-template-columns: repeat(2, minmax(0, 1fr));
     grid-template-areas:
       "camera   camera"
+      "viz      viz"
       "thermal  thermal"
       "chart    chart"
       "motion   extruder"
@@ -1113,6 +1157,7 @@ input[type=range]::-moz-range-thumb    { width: 14px; height: 14px; border-radiu
     padding: 16px;
   }
   .mod-camera   { grid-area: camera; }
+  .mod-viz      { grid-area: viz; }
   .mod-thermal  { grid-area: thermal; }
   .mod-chart    { grid-area: chart; }
   .mod-motion   { grid-area: motion; }
@@ -1132,6 +1177,7 @@ input[type=range]::-moz-range-thumb    { width: 14px; height: 14px; border-radiu
     grid-template-areas:
       "camera  thermal"
       "camera  chart"
+      "viz     viz"
       "motion  extruder"
       "tune    maint"
       "files   log";

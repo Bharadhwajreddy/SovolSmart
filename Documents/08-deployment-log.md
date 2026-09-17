@@ -10,7 +10,7 @@ wrong.
 ## Contents
 
 - [The system as built](#the-system-as-built)
-- [Five real problems, and what each one taught](#five-real-problems-and-what-each-one-taught)
+- [Seven real problems, and what each one taught](#seven-real-problems-and-what-each-one-taught)
 - [What changed in the code](#what-changed-in-the-code)
 - [Remote access](#remote-access)
 - [Verification evidence](#verification-evidence)
@@ -36,7 +36,7 @@ wrong.
 
 ---
 
-## Five real problems, and what each one taught
+## Seven real problems, and what each one taught
 
 ### 1. OctoPrint connected to a simulator, not the printer
 
@@ -187,6 +187,51 @@ PASS  dashboard is VISIBLE after signing in    ← it was there all along
 > layer nobody is looking at — here, CSS specificity. Any UI framework that
 > toggles `.hidden` or the `hidden` attribute needs this rule.
 
+### 6. The public URL died after a reboot, while everything said it was fine
+
+**Symptom:** `https://octopi.tail928e81.ts.net` stopped answering. Every check
+looked healthy — all four services active, the app serving on the LAN,
+`tailscale funnel status` reporting **Funnel on**, and the HTTPS certificate
+valid and unchanged.
+
+**What it actually was:** the TLS handshake failed at Tailscale's ingress. DNS
+had also moved to a different set of ingress servers after the reboot. Neither
+a certificate refresh nor re-running `tailscale funnel` fixed it; the funnel
+registration itself had gone stale.
+
+**Fix:**
+
+```bash
+sudo tailscale serve reset
+sudo systemctl restart tailscaled
+sudo tailscale funnel --bg --https=443 http://localhost:8088
+```
+
+> When a service insists it is fine but nothing answers, restart the thing that
+> holds the registration, not just the thing that serves the content.
+
+### 7. Funnel and OctoPrint's web server both wanted port 443
+
+**Symptom:** after the same reboot, `octopi.local` stopped loading entirely.
+
+**Cause:** OctoPi serves OctoPrint through **haproxy** on ports 80 and 443.
+Tailscale Funnel had been given port 443, so haproxy could not bind it and
+exited:
+
+```
+[ALERT] Binding [/etc/haproxy/haproxy.cfg:25] for frontend public:
+        cannot bind socket (Address already in use) for [:::443]
+```
+
+haproxy owns port 80 as well, so losing the 443 bind took OctoPrint's whole web
+interface down with it — a failure one port away from the actual conflict.
+
+**Fix:** the `:443` bind is commented out in `/etc/haproxy/haproxy.cfg`
+(original kept at `haproxy.cfg.bak`), leaving Funnel on 443 and haproxy on 80.
+OctoPrint is reachable at `http://octopi.local`, the dashboard keeps a clean
+public HTTPS URL with no port number, and HTTPS on the LAN — which was a
+self-signed certificate nobody trusted anyway — is the only thing given up.
+
 ---
 
 ## What changed in the code
@@ -205,6 +250,7 @@ PASS  dashboard is VISIBLE after signing in    ← it was there all along
 | `pathToFileURL()` in the test mocks | The POSIX-only guard silently no-opped on Windows |
 | Toolhead read from the printer profile (`getToolhead()`) | Problem 2 — a shared nozzle is one heater; both drives stay extrudable |
 | Light instrument-panel UI, self-hosted IBM Plex | Categorical palette validated for colour-blind separation; E-STOP pinned outside every tab |
+| Print visualiser (`server/gcode.js`, `/api/gcode/model`) | Shows the layer being printed and the nozzle position when the camera is unavailable — from the sliced file and OctoPrint's byte offset, not a simulation |
 
 **New endpoints.** Still an allowlist, never a G-code pass-through: the browser
 picks a verb and sends a **number**, the server decides the G-code and clamps
@@ -258,7 +304,7 @@ send it over plain HTTP.
 
 ## Verification evidence
 
-**Tests: 56 passing, 0 failing** (was 37; 13 added for the new endpoints —
+**Tests: 62 passing, 0 failing** (was 37; 13 added for the new endpoints —
 clamping, the `G91`/`G90` wrapper, the cold-extrusion refusal, and both the
 mid-print refusals and allowances — and 6 for the shared nozzle).
 
@@ -286,7 +332,8 @@ and `npm install`.
 
 - [ ] **Camera.** The phone answers pings at `192.168.2.143` but **no ports are
       open** — IP Webcam is installed but its server was never started. Needs
-      **Start server** tapped.
+      **Start server** tapped. (The Layer view now covers the gap in the
+      meantime, but it is not a picture of the actual print.)
 - [ ] ⚠️ **DHCP reservation for the camera phone.** Its IP will change on its
       own eventually and the camera will die silently weeks later with no
       obvious cause. The most common long-term failure of this setup.

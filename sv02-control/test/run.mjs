@@ -427,6 +427,90 @@ try {
     await waitForState('printing');
   });
 
+  console.log('\nPrint visualiser');
+
+  await test('the parser finds layers, bounds and byte ranges', async () => {
+    const { parseGcode, locate } = await import('../server/gcode.js');
+    const src = [
+      'G90', 'M82',
+      'G1 Z0.2 F600',
+      'G1 X0 Y0 E0.1', 'G1 X20 Y0 E1', 'G1 X20 Y20 E2',
+      'G1 X60 Y60 F3000',
+      'G1 Z0.4 F600',
+      'G1 X0 Y0 F3000',
+      'G1 X0 Y0 E3', 'G1 X20 Y0 E4',
+    ].join('\n') + '\n';
+
+    const model = parseGcode(src, { tolerance: 0.01 });
+    assert.equal(model.layers.length, 2);
+    assert.deepEqual(model.layers.map((l) => l.z), [0.2, 0.4]);
+    assert.equal(model.bounds.maxX, 20);
+    assert.ok(model.layers[0].endByte > model.layers[0].startByte, 'layers need a byte range');
+
+    // The travel to (60,60) must not be drawn as printed plastic.
+    const drawn = model.layers.flatMap((l) => l.paths.flat());
+    assert.ok(Math.max(...drawn) <= 20, 'a travel move leaked into the geometry');
+
+    const at = locate(model, model.layers[1].startByte + 1);
+    assert.equal(at.layer, 1);
+    assert.equal(at.z, 0.4);
+  });
+
+  await test('relative moves and G92 resets are followed', async () => {
+    const { parseGcode } = await import('../server/gcode.js');
+    const src = [
+      'G90', 'M83', 'G1 Z0.2',
+      'G1 X10 Y10 E1',
+      'G91', 'G1 X5 Y0 E1',
+      'G90', 'G92 X0 Y0', 'G1 X5 Y0 E1',
+    ].join('\n');
+
+    const model = parseGcode(src, { tolerance: 0.01 });
+    assert.equal(model.layers.length, 1);
+    assert.equal(model.bounds.maxX, 15, 'the relative move should reach X15');
+  });
+
+  await test('a byte offset past the end lands on the last layer', async () => {
+    const { parseGcode, locate } = await import('../server/gcode.js');
+    const model = parseGcode('G90\nM82\nG1 Z0.2\nG1 X0 Y0 E1\nG1 X5 Y0 E2\n', { tolerance: 0.01 });
+    const at = locate(model, 10_000_000);
+    assert.equal(at.layer, model.layers.length - 1);
+    assert.equal(at.fraction, 1);
+  });
+
+  await test('the visualiser model becomes available for the loaded file', async () => {
+    octoMock.setMode('printing');
+    await waitForState('printing');
+
+    let visual = null;
+    const deadline = Date.now() + 20000;
+    while (Date.now() < deadline) {
+      const res = await call('/api/status');
+      visual = res.body.visual;
+      if (visual && visual.state === 'ready') break;
+      await sleep(400);
+    }
+
+    assert.equal(visual.state, 'ready', visual && visual.error);
+    assert.ok(visual.layerCount >= 4, `expected layers, got ${visual.layerCount}`);
+    assert.ok(Number.isFinite(visual.layer), 'expected a current layer');
+    assert.ok(visual.nozzle && Number.isFinite(visual.nozzle.x), 'expected a nozzle position');
+  });
+
+  await test('the model endpoint returns the layer geometry', async () => {
+    const { status, body } = await call('/api/gcode/model');
+    assert.equal(status, 200);
+    assert.ok(body.key, 'the payload identifies which file it is');
+    assert.ok(Array.isArray(body.layers) && body.layers.length >= 4);
+    assert.ok(Array.isArray(body.layers[0].paths[0]), 'each layer carries paths');
+    assert.ok(body.bounds.maxX >= 20);
+  });
+
+  await test('the model endpoint needs a login', async () => {
+    const res = await fetch(`${BASE}/api/gcode/model`);
+    assert.equal(res.status, 401);
+  });
+
   console.log('\nStored files');
 
   await test('files are listed, including inside folders', async () => {

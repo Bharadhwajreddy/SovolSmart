@@ -31,6 +31,18 @@
     cameraClock: $('camera-clock'),
     cameraSpinner: document.querySelector('#camera-overlay .spinner'),
 
+    viz2d: $('viz-2d'),
+    viz3d: $('viz-3d'),
+    vizEmpty2d: $('viz-empty-2d'),
+    vizEmpty3d: $('viz-empty-3d'),
+    vizCode: $('viz-code'),
+    vizFollow: $('viz-follow'),
+    vizSlider: $('viz-slider'),
+    vizLayer: $('viz-layer'),
+    vizZ: $('viz-z'),
+    vizX: $('viz-x'),
+    vizY: $('viz-y'),
+
     jobFile: $('job-file'),
     jobPercent: $('job-percent'),
     jobMeter: $('job-meter'),
@@ -129,6 +141,19 @@
     history: [],
     chartRange: 1800,
     chartTable: false,
+    viz: {
+      model: null,
+      key: null,
+      loading: false,
+      layer: 0,
+      follow: true,
+      stackKey: '',
+      stack2d: null,
+      stack3d: null,
+      nozzle: null,      // where the printer says it is
+      shown: null,       // where the marker currently is, eased toward nozzle
+      frame: null,
+    },
     hoverT: null,
     extrudeTool: null,
     babyTotal: 0,
@@ -372,6 +397,7 @@
         // A canvas has no size while its panel is display:none, so redraw
         // once it is actually on screen.
         if (state.activeTab === 'monitor') drawChart();
+        if (state.activeTab === 'monitor') state.viz.stackKey = '';
         if (state.activeTab === 'files') loadFiles();
         if (state.activeTab === 'log') loadEvents();
         window.scrollTo({ top: 0 });
@@ -541,6 +567,7 @@
     }
 
     renderJob(snap);
+    renderVisualiser(snap);
     renderSensors(snap.sensors || []);
     renderExtruder(snap.sensors || []);
 
@@ -1229,6 +1256,312 @@
     });
   }
 
+  // --- Print visualiser ----------------------------------------------------
+  //
+  // Everything drawn here comes from the sliced file and OctoPrint's real byte
+  // position in it: the layer, its shape, and how far along that layer the
+  // nozzle is. It is a substitute for the camera, not a simulation.
+
+  const VIZ_STACK_LAYERS = 60;   // how many layers the 3D view draws at once
+
+  function vizCanvasSize(canvas) {
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    if (!width || !height) return null;
+    const ratio = window.devicePixelRatio || 1;
+    if (canvas.width !== Math.round(width * ratio) || canvas.height !== Math.round(height * ratio)) {
+      canvas.width = Math.round(width * ratio);
+      canvas.height = Math.round(height * ratio);
+    }
+    return { width, height, ratio };
+  }
+
+  /**
+   * Fit the model's footprint into a canvas, flipping Y (printer Y is up).
+   * The top padding is larger to clear the corner tag overlaying the canvas.
+   */
+  function vizFlat(bounds, width, height, padX = 14, padTop = 30, padBottom = 14) {
+    const w = Math.max(bounds.maxX - bounds.minX, 1);
+    const h = Math.max(bounds.maxY - bounds.minY, 1);
+    const availW = width - padX * 2;
+    const availH = height - padTop - padBottom;
+    const scale = Math.min(availW / w, availH / h);
+    const left = padX + (availW - w * scale) / 2;
+    const top = padTop + (availH - h * scale) / 2;
+    return (x, y) => [left + (x - bounds.minX) * scale, top + (h - (y - bounds.minY)) * scale];
+  }
+
+  /** Isometric projection, fitted by projecting the bounding box's corners. */
+  function vizIso(bounds, width, height, padX = 14, padTop = 30, padBottom = 14) {
+    const angle = Math.PI / 6;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const cx = (bounds.minX + bounds.maxX) / 2;
+    const cy = (bounds.minY + bounds.maxY) / 2;
+    const raw = (x, y, z) => {
+      const dx = x - cx;
+      const dy = y - cy;
+      return [(dx - dy) * cos, (dx + dy) * sin - (z - bounds.minZ)];
+    };
+
+    let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+    for (const X of [bounds.minX, bounds.maxX]) {
+      for (const Y of [bounds.minY, bounds.maxY]) {
+        for (const Z of [bounds.minZ, bounds.maxZ]) {
+          const [u, v] = raw(X, Y, Z);
+          if (u < minU) minU = u;
+          if (u > maxU) maxU = u;
+          if (v < minV) minV = v;
+          if (v > maxV) maxV = v;
+        }
+      }
+    }
+
+    const availW = width - padX * 2;
+    const availH = height - padTop - padBottom;
+    const scale = Math.min(availW / Math.max(maxU - minU, 1), availH / Math.max(maxV - minV, 1));
+    const midU = (minU + maxU) / 2;
+    const midV = (minV + maxV) / 2;
+    const centreX = padX + availW / 2;
+    const centreY = padTop + availH / 2;
+    return (x, y, z) => {
+      const [u, v] = raw(x, y, z);
+      return [centreX + (u - midU) * scale, centreY + (v - midV) * scale];
+    };
+  }
+
+  function vizStrokeLayer(ctx, layer, project, colour, lineWidth) {
+    ctx.beginPath();
+    for (const path of layer.paths) {
+      for (let i = 0; i < path.length; i += 2) {
+        const [px, py] = project(path[i], path[i + 1], layer.z);
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+    }
+    ctx.strokeStyle = colour;
+    ctx.lineWidth = lineWidth;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.stroke();
+  }
+
+  /**
+   * Redraw the expensive part — every printed layer — into offscreen canvases.
+   * Only the nozzle marker is drawn per frame on top of these.
+   */
+  function vizBuildStacks() {
+    const { model } = state.viz;
+    if (!model) return;
+
+    const size2d = vizCanvasSize(el.viz2d);
+    const size3d = vizCanvasSize(el.viz3d);
+    if (!size2d || !size3d) return;
+
+    const index = Math.max(0, Math.min(model.layers.length - 1, state.viz.layer));
+    const key = `${state.viz.key}|${index}|${size2d.width}x${size2d.height}|${size3d.width}x${size3d.height}`;
+    if (key === state.viz.stackKey) return;
+    state.viz.stackKey = key;
+
+    // --- 2D: this layer, with a few beneath it as context ---
+    const flat = document.createElement('canvas');
+    flat.width = el.viz2d.width;
+    flat.height = el.viz2d.height;
+    const fctx = flat.getContext('2d');
+    fctx.setTransform(size2d.ratio, 0, 0, size2d.ratio, 0, 0);
+    const project2d = vizFlat(model.bounds, size2d.width, size2d.height);
+    const flatProject = (x, y) => project2d(x, y);
+
+    for (let i = Math.max(0, index - 4); i < index; i += 1) {
+      vizStrokeLayer(fctx, model.layers[i], flatProject, 'rgba(22, 24, 27, 0.10)', 1);
+    }
+    vizStrokeLayer(fctx, model.layers[index], flatProject, SERIES[0], 1.6);
+    state.viz.stack2d = flat;
+
+    // --- 3D: everything printed so far ---
+    const iso = document.createElement('canvas');
+    iso.width = el.viz3d.width;
+    iso.height = el.viz3d.height;
+    const ictx = iso.getContext('2d');
+    ictx.setTransform(size3d.ratio, 0, 0, size3d.ratio, 0, 0);
+    const project3d = vizIso(model.bounds, size3d.width, size3d.height);
+
+    // Draw a bounded sample of the stack so a 400-layer print stays cheap.
+    const stride = Math.max(1, Math.ceil(index / VIZ_STACK_LAYERS));
+    for (let i = 0; i < index; i += stride) {
+      vizStrokeLayer(ictx, model.layers[i], project3d, 'rgba(22, 24, 27, 0.13)', 1);
+    }
+    if (index > 0) vizStrokeLayer(ictx, model.layers[index - 1], project3d, 'rgba(22, 24, 27, 0.22)', 1);
+    vizStrokeLayer(ictx, model.layers[index], project3d, SERIES[0], 1.6);
+    state.viz.stack3d = iso;
+  }
+
+  function vizDrawMarker(ctx, px, py, size, ratio) {
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    ctx.beginPath();
+    ctx.arc(px, py, size + 2, 0, Math.PI * 2);
+    ctx.fillStyle = INK.surface;
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(px, py, size, 0, Math.PI * 2);
+    ctx.fillStyle = '#16181b';
+    ctx.fill();
+  }
+
+  function vizPaint() {
+    const { model, stack2d, stack3d, shown } = state.viz;
+    if (!model || !stack2d || !stack3d) return;
+
+    const size2d = vizCanvasSize(el.viz2d);
+    const size3d = vizCanvasSize(el.viz3d);
+    if (!size2d || !size3d) return;
+
+    const index = Math.max(0, Math.min(model.layers.length - 1, state.viz.layer));
+    const layer = model.layers[index];
+
+    const ctx2 = el.viz2d.getContext('2d');
+    ctx2.setTransform(1, 0, 0, 1, 0, 0);
+    ctx2.clearRect(0, 0, el.viz2d.width, el.viz2d.height);
+    ctx2.drawImage(stack2d, 0, 0);
+
+    const ctx3 = el.viz3d.getContext('2d');
+    ctx3.setTransform(1, 0, 0, 1, 0, 0);
+    ctx3.clearRect(0, 0, el.viz3d.width, el.viz3d.height);
+    ctx3.drawImage(stack3d, 0, 0);
+
+    if (!shown) return;
+
+    const [fx, fy] = vizFlat(model.bounds, size2d.width, size2d.height)(shown.x, shown.y);
+    ctx2.setTransform(size2d.ratio, 0, 0, size2d.ratio, 0, 0);
+    ctx2.strokeStyle = 'rgba(22, 24, 27, 0.18)';
+    ctx2.lineWidth = 1;
+    ctx2.beginPath();
+    ctx2.moveTo(0, fy + 0.5);
+    ctx2.lineTo(size2d.width, fy + 0.5);
+    ctx2.moveTo(fx + 0.5, 0);
+    ctx2.lineTo(fx + 0.5, size2d.height);
+    ctx2.stroke();
+    vizDrawMarker(ctx2, fx, fy, 4, size2d.ratio);
+
+    const [ix, iy] = vizIso(model.bounds, size3d.width, size3d.height)(shown.x, shown.y, layer.z);
+    vizDrawMarker(ctx3, ix, iy, 4, size3d.ratio);
+  }
+
+  /** Ease the marker toward the reported position between polls. */
+  function vizFrame() {
+    const viz = state.viz;
+    if (viz.nozzle) {
+      if (!viz.shown) viz.shown = { ...viz.nozzle };
+      else {
+        viz.shown.x += (viz.nozzle.x - viz.shown.x) * 0.16;
+        viz.shown.y += (viz.nozzle.y - viz.shown.y) * 0.16;
+      }
+    }
+    if (el.viz2d.offsetParent !== null) {
+      vizBuildStacks();
+      vizPaint();
+    }
+    viz.frame = requestAnimationFrame(vizFrame);
+  }
+
+  async function ensureVizModel(visual) {
+    const viz = state.viz;
+    if (!visual || visual.state !== 'ready' || !visual.key) return;
+    if (viz.key === visual.key || viz.loading) return;
+
+    viz.loading = true;
+    try {
+      const data = await api('/api/gcode/model');
+      viz.model = data;
+      viz.key = data.key;
+      viz.layer = 0;
+      viz.stackKey = '';
+      viz.shown = null;
+      el.vizSlider.max = String(Math.max(1, data.layers.length));
+    } catch {
+      /* the empty state already explains itself */
+    } finally {
+      viz.loading = false;
+    }
+  }
+
+  const VIZ_MESSAGES = {
+    idle: 'No file loaded. Start a print to see its layers.',
+    loading: 'Reading the G-code…',
+    unavailable: 'The layer view is unavailable for this file.',
+  };
+
+  function renderVisualiser(snap) {
+    const visual = snap.visual || { state: 'idle' };
+    const viz = state.viz;
+
+    if (visual.state !== 'ready' && viz.key) {
+      // The job ended or changed: drop the old model rather than show a stale one.
+      viz.model = null;
+      viz.key = null;
+      viz.shown = null;
+      viz.nozzle = null;
+      viz.stackKey = '';
+    }
+    ensureVizModel(visual);
+
+    const ready = Boolean(viz.model);
+    const message = ready ? '' : (visual.error && visual.state === 'unavailable')
+      ? visual.error
+      : VIZ_MESSAGES[visual.state] || 'Loading layers…';
+    el.vizEmpty2d.hidden = ready;
+    el.vizEmpty3d.hidden = ready;
+    if (!ready) {
+      el.vizEmpty2d.textContent = message;
+      el.vizEmpty3d.textContent = message;
+      el.vizCode.textContent = visual.state === 'ready' ? 'loading layers' : (visual.state || 'no file loaded');
+      el.vizLayer.textContent = '—';
+      el.vizZ.textContent = '—';
+      el.vizX.textContent = '—';
+      el.vizY.textContent = '—';
+      return;
+    }
+
+    const total = viz.model.layers.length;
+    if (viz.follow && Number.isFinite(visual.layer)) viz.layer = visual.layer;
+    viz.layer = Math.max(0, Math.min(total - 1, viz.layer));
+    el.vizSlider.max = String(total);
+    el.vizSlider.value = String(viz.layer + 1);
+
+    if (visual.nozzle && viz.follow) viz.nozzle = visual.nozzle;
+
+    const layer = viz.model.layers[viz.layer];
+    el.vizLayer.textContent = `${viz.layer + 1} / ${total}`;
+    el.vizZ.textContent = `${layer.z.toFixed(2)} mm`;
+    el.vizX.textContent = viz.shown ? `${viz.shown.x.toFixed(1)} mm` : '—';
+    el.vizY.textContent = viz.shown ? `${viz.shown.y.toFixed(1)} mm` : '—';
+    el.vizCode.textContent = `${total} layers${viz.model.truncated ? ' · simplified' : ''}`;
+  }
+
+  function wireVisualiser() {
+    el.vizSlider.addEventListener('input', () => {
+      state.viz.layer = Number(el.vizSlider.value) - 1;
+      state.viz.follow = false;
+      el.vizFollow.setAttribute('aria-pressed', 'false');
+      el.vizFollow.textContent = 'Follow print';
+      paintSlider(el.vizSlider);
+    });
+
+    el.vizFollow.addEventListener('click', () => {
+      state.viz.follow = !state.viz.follow;
+      el.vizFollow.setAttribute('aria-pressed', String(state.viz.follow));
+      el.vizFollow.textContent = state.viz.follow ? 'Following print' : 'Follow print';
+    });
+
+    let resizeFrame = null;
+    window.addEventListener('resize', () => {
+      cancelAnimationFrame(resizeFrame);
+      resizeFrame = requestAnimationFrame(() => { state.viz.stackKey = ''; });
+    });
+
+    if (!state.viz.frame) state.viz.frame = requestAnimationFrame(vizFrame);
+  }
+
   // --- Polling -------------------------------------------------------------
 
   function updateLink(ok) {
@@ -1867,6 +2200,7 @@
     wireTune();
     wireUpload();
     wireChart();
+    wireVisualiser();
     el.refreshEvents.addEventListener('click', loadEvents);
     el.refreshFiles.addEventListener('click', loadFiles);
 

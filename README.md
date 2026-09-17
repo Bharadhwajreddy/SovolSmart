@@ -103,7 +103,7 @@ SovolSmart/
 │   ├── README.md              full app documentation + config reference
 │   ├── server/                backend: Express, OctoPrint client, poll loop
 │   ├── public/                frontend: plain HTML/CSS/JS, no build step
-│   ├── test/                  56 end-to-end tests + mock printer and camera
+│   ├── test/                  62 end-to-end tests + mock printer and camera
 │   ├── scripts/check.mjs      `npm run check` — the connection diagnostic
 │   ├── demo/                  builds a static, hostable demo
 │   ├── deploy/                systemd unit file
@@ -116,7 +116,7 @@ SovolSmart/
 
 ## Status
 
-The application is **finished, tested and deployed** — 56 end-to-end tests, all passing,
+The application is **finished, tested and deployed** — 62 end-to-end tests, all passing,
 covering authentication, multi-heater and shared-nozzle sensor handling, pause/resume/cancel,
 `M112`, the G-code allowlist, jog/extrude/fan/speed/flow/babystep bounds and
 their mid-print safety rules, upload rejection paths, the camera relay,

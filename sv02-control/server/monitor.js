@@ -2,6 +2,7 @@ import { config } from './config.js';
 import { logEvent } from './log.js';
 import * as octo from './octoprint.js';
 import * as notify from './notify.js';
+import { parseGcode, locate } from './gcode.js';
 
 /**
  * Single background poller. Every browser tab reads this one cached snapshot
@@ -73,6 +74,63 @@ let timer = null;
  */
 let toolhead = { extruders: 1, sharedNozzle: false };
 let toolheadCheckedAt = 0;
+
+/**
+ * Parsed G-code for the file currently on the printer, for the visualiser.
+ * Downloading and parsing happen off the poll loop: a slow read must never
+ * delay temperature monitoring.
+ */
+let model = null;
+let modelKey = null;
+let modelState = 'idle';   // idle | loading | ready | unavailable
+let modelError = null;
+
+/** Identity of the loaded file — path plus size, so a re-slice re-parses. */
+function fileKey(job) {
+  const file = job?.job?.file;
+  const path = file?.path || file?.name;
+  return path ? `${path}|${file.size ?? 0}` : null;
+}
+
+function ensureModel(job) {
+  const key = fileKey(job);
+
+  if (!key) {
+    model = null;
+    modelKey = null;
+    modelError = null;
+    modelState = 'idle';
+    return;
+  }
+  if (key === modelKey) return;
+
+  modelKey = key;
+  model = null;
+  modelError = null;
+  modelState = 'loading';
+
+  const path = job.job.file.path || job.job.file.name;
+  (async () => {
+    try {
+      const text = await octo.downloadGcode(path);
+      if (modelKey !== key) return;          // the job changed underneath us
+      const parsed = parseGcode(text);
+      if (modelKey !== key) return;
+      model = parsed;
+      modelState = 'ready';
+      logEvent('info', 'model_ready',
+        `Visualiser: ${parsed.layers.length} layers parsed from ${path}${parsed.truncated ? ' (simplified)' : ''}.`);
+    } catch (err) {
+      if (modelKey !== key) return;
+      modelState = 'unavailable';
+      modelError = err.message;
+      logEvent('warn', 'model_failed', `Visualiser could not read ${path}: ${err.message}`);
+    }
+  })();
+}
+
+/** The parsed model, for the /api/gcode/model endpoint. */
+export const getModel = () => (modelState === 'ready' && model ? { key: modelKey, model } : null);
 
 function formatDuration(seconds) {
   if (!Number.isFinite(seconds) || seconds < 0) return null;
@@ -278,6 +336,8 @@ async function poll() {
       }
     }
 
+    ensureModel(job);
+
     recordHistory(printer, now);
 
     await handleStateChange(state, job);
@@ -338,6 +398,28 @@ export function stopMonitor() {
   if (timer) clearTimeout(timer);
 }
 
+/**
+ * Visualiser state for the snapshot. `filepos` is OctoPrint's byte offset into
+ * the G-code, which `locate()` turns into a layer and a point on that layer.
+ */
+function visualState(job) {
+  const filepos = job?.progress?.filepos ?? null;
+  const at = modelState === 'ready' ? locate(model, filepos) : null;
+
+  return {
+    state: modelState,
+    key: modelKey,
+    error: modelError,
+    truncated: model?.truncated ?? false,
+    layerCount: model?.layers.length ?? 0,
+    filepos,
+    layer: at?.layer ?? null,
+    z: at?.z ?? null,
+    fraction: at?.fraction ?? null,
+    nozzle: at && Number.isFinite(at.x) ? { x: at.x, y: at.y } : null,
+  };
+}
+
 /** Latest cached snapshot, shaped for the frontend. */
 export function getSnapshot() {
   const { state, printer, job, error, updatedAt } = snapshot;
@@ -365,6 +447,11 @@ export function getSnapshot() {
     // Extruder drives are separate from heaters: the SV02 has two drives
     // feeding one nozzle, and either drive can still be extruded on.
     toolhead: { extruders: toolhead.extruders, sharedNozzle: toolhead.sharedNozzle },
+
+    // Where the printer is inside the sliced file: layer, height and the
+    // nozzle's position along that layer, all derived from OctoPrint's real
+    // byte offset. Null until a model has been parsed.
+    visual: visualState(job),
     job: {
       file: job?.job?.file?.name ?? null,
       completion: job?.progress?.completion ?? null,

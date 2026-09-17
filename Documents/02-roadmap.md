@@ -309,6 +309,10 @@ Full analysis of the probe question, including what Prusa is actually doing
 and what it would take on the SV02's toolhead, is in
 [nozzle-probe-research.md](../sv02-control/docs/nozzle-probe-research.md).
 
+**Done since this list was written:** the **Layer view** — a 2D and 3D picture
+of the layer being printed, drawn from the sliced file, for when the camera is
+unavailable.
+
 ## Risk register
 
 | Risk | Likelihood | Impact | Mitigation |

@@ -228,6 +228,45 @@ export async function uploadFile(buffer, filename, startNow) {
 }
 
 /**
+ * Fetch the raw G-code of a stored file, for the visualiser.
+ *
+ * Capped, because the whole file is held in memory while it is parsed and the
+ * Pi has 1 GB. A file too big to visualise is not an error for the print — the
+ * dashboard just says so and carries on.
+ */
+export async function downloadGcode(filePath, maxBytes = 25 * 1024 * 1024) {
+  const encoded = filePath.split('/').map(encodeURIComponent).join('/');
+  const url = `${config.octoprintUrl}/downloads/files/local/${encoded}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 120000);
+
+  try {
+    const response = await fetch(url, {
+      headers: { 'X-Api-Key': config.octoprintApiKey },
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new OctoPrintError(`OctoPrint returned HTTP ${response.status} downloading ${filePath}.`, {
+        status: response.status,
+      });
+    }
+
+    const declared = Number(response.headers.get('content-length'));
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      throw new OctoPrintError(`That file is ${(declared / 1e6).toFixed(0)} MB — too large to visualise.`);
+    }
+
+    const text = await response.text();
+    if (Buffer.byteLength(text) > maxBytes) {
+      throw new OctoPrintError('That file is too large to visualise.');
+    }
+    return text;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Collapse OctoPrint's several state sources into one label the UI can render.
  * @returns {'offline'|'error'|'printing'|'paused'|'idle'|'connecting'}
  */

@@ -47,6 +47,21 @@ You can close the tab. The server keeps polling and keeps watching for
 anomalies whether or not a browser is open — that is the whole point of the
 server-side poll loop.
 
+### Watching without the camera
+
+The **Layer view** module draws the file being printed: a 2D top-down view of
+the current layer beside a 3D view of everything printed so far, with the
+nozzle marked on both. It comes from the sliced file and OctoPrint's byte
+position in it, so it keeps working when the camera phone is asleep, and it
+stops when the print pauses.
+
+Drag the slider to look at any layer; press **Follow print** to snap back to
+the live one.
+
+If it says *Reading the G-code…* for a while, that is the Pi downloading and
+parsing the file — a big file takes a few seconds. Files over 25 MB are not
+visualised; the print is unaffected.
+
 ### Stopping a print
 
 | Button | What it does | When |

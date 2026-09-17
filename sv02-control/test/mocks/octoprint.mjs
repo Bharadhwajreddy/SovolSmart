@@ -17,6 +17,25 @@ let mode = process.env.MOCK_MODE || 'printing';
  */
 let profile = { count: 2, sharedNozzle: false };
 
+/**
+ * A tiny but genuine sliced file: four 20 mm squares stacked 0.2 mm apart,
+ * with a travel move between layers. Enough for the visualiser to parse real
+ * layers, byte ranges and a nozzle position.
+ */
+export const GCODE = (() => {
+  const lines = ['G90', 'M82', 'G28'];
+  for (let i = 0; i < 4; i += 1) {
+    const z = (0.2 * (i + 1)).toFixed(1);
+    let e = i * 10;
+    lines.push(`G1 Z${z} F600`, 'G1 X0 Y0 F3000');
+    for (const [x, y] of [[0, 0], [20, 0], [20, 20], [0, 20], [0, 0]]) {
+      e += 1;
+      lines.push(`G1 X${x} Y${y} E${e.toFixed(3)}`);
+    }
+  }
+  return lines.join('\n') + '\n';
+})();
+
 /** Every request body the app sent, so tests can assert on what was sent. */
 export const received = [];
 
@@ -42,8 +61,18 @@ const printer = () => ({
 });
 
 const job = () => ({
-  job: { file: { name: 'benchy_v3.gcode', size: 4823901 }, estimatedPrintTime: 5400 },
-  progress: { completion: 42.7, printTime: 2310, printTimeLeft: 3090 },
+  job: {
+    file: { name: 'benchy_v3.gcode', path: 'benchy_v3.gcode', size: Buffer.byteLength(GCODE) },
+    estimatedPrintTime: 5400,
+  },
+  progress: {
+    completion: 42.7,
+    printTime: 2310,
+    printTimeLeft: 3090,
+    // Byte offset into the file above, which is what the visualiser maps
+    // back to a layer and a nozzle position.
+    filepos: Math.round(Buffer.byteLength(GCODE) * 0.42),
+  },
   state: mode === 'printing' ? 'Printing' : 'Operational',
 });
 
@@ -91,6 +120,10 @@ export function start(port = 5099) {
         });
       }
       if (url.pathname === '/api/files/local') return json(200, fileListing);
+      if (url.pathname.startsWith('/downloads/files/local/')) {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        return res.end(GCODE);
+      }
       return json(404, { error: 'not found' });
     }
 
