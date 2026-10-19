@@ -9,6 +9,7 @@ import { handleLogin, handleLogout, requireAuth, isAuthenticated } from './auth.
 import { startMonitor, getSnapshot } from './monitor.js';
 import { proxyStream, proxySnapshot } from './camera.js';
 import * as octo from './octoprint.js';
+import * as gcode from './gcode.js';
 import { OctoPrintError } from './octoprint.js';
 
 // --- Boot checks -----------------------------------------------------------
@@ -132,10 +133,39 @@ app.post('/api/control/emergency-stop', route(async (_req, res) => {
   });
 }));
 
-app.post('/api/control/reconnect', route(async (_req, res) => {
-  await octo.connectPrinter();
-  logEvent('info', 'reconnect', 'Reconnect requested.');
+app.post('/api/control/reconnect', route(async (req, res) => {
+  const { port, baudrate } = req.body || {};
+  await octo.connectPrinter(port, baudrate);
+  logEvent('info', 'reconnect',
+    `Reconnect requested${port ? ` on ${port}` : ''}${baudrate ? ` at ${baudrate}` : ''}.`);
   res.json({ ok: true });
+}));
+
+/**
+ * Why the printer is offline, in terms that point at a fix.
+ *
+ * "Offline" covers two very different faults — the machine cannot see the
+ * printer, or it can see it but nothing has opened the link — and they need
+ * opposite responses. Guessing between them is most of the frustration of
+ * setting this up.
+ */
+app.get('/api/diagnostics', route(async (_req, res) => {
+  const snap = getSnapshot();
+  try {
+    const serial = await octo.serialDiagnostics();
+    return res.json({ state: snap.state, octoprint: 'reachable', ...serial });
+  } catch (err) {
+    // Could not even ask OctoPrint — so the fault is before the serial layer.
+    return res.json({
+      state: snap.state,
+      octoprint: 'unreachable',
+      verdict: 'no-octoprint',
+      hint: `${err.message} The dashboard is running, but it cannot reach OctoPrint itself. `
+        + 'Check OCTOPRINT_URL and that the OctoPrint service is running.',
+      ports: [],
+      baudrates: [],
+    });
+  }
 }));
 
 app.post('/api/control/temperature', route(async (req, res) => {
@@ -199,6 +229,108 @@ app.post('/api/control/command', route(async (req, res) => {
   await octo.sendCommand(command.gcode);
   logEvent('info', 'maintenance', `${command.label} (${command.gcode.join(', ')})`);
   return res.json({ ok: true, ran: command.gcode });
+}));
+
+// --- Layer view ------------------------------------------------------------
+//
+// Indexing walks the whole file, so it can take a few seconds on a Pi for a
+// large print. It happens once per file and is then cached.
+
+app.get('/api/gcode/index', route(async (req, res) => {
+  const filePath = typeof req.query.file === 'string' ? req.query.file : getSnapshot().job?.path;
+  if (!filePath) return res.status(400).json({ error: 'No file is selected.' });
+
+  const index = await gcode.ensureIndexed(filePath);
+  return res.json({ file: filePath, ...gcode.summary(index) });
+}));
+
+app.get('/api/gcode/layer', route(async (req, res) => {
+  const snap = getSnapshot();
+  const filePath = typeof req.query.file === 'string' ? req.query.file : snap.job?.path;
+  if (!filePath) return res.status(400).json({ error: 'No file is selected.' });
+
+  // Without an explicit layer, follow the print: locate it from the byte
+  // offset OctoPrint has reached.
+  const requested = Number(req.query.layer);
+  const layerIndex = Number.isFinite(requested)
+    ? requested
+    : await gcode.layerAtFilepos(filePath, snap.job?.filepos);
+
+  const layer = await gcode.getLayer(filePath, layerIndex);
+  if (!layer) return res.status(404).json({ error: 'That layer does not exist.' });
+
+  return res.json({ file: filePath, ...layer });
+}));
+
+app.get('/api/gcode/lines', route(async (req, res) => {
+  const snap = getSnapshot();
+  const filePath = typeof req.query.file === 'string' ? req.query.file : snap.job?.path;
+  if (!filePath) return res.status(400).json({ error: 'No file is selected.' });
+
+  const at = Number.isFinite(Number(req.query.filepos))
+    ? Number(req.query.filepos)
+    : snap.job?.filepos;
+
+  return res.json({ file: filePath, ...(await gcode.linesAround(filePath, at)) });
+}));
+
+// --- Direct G-code ---------------------------------------------------------
+//
+// Unlike the maintenance buttons, which run a fixed allowlist, this sends
+// whatever is typed. That is the point of it — but it means anyone past the
+// login can drive the printer directly, so every command is logged, and the
+// genuinely dangerous ones have to be confirmed explicitly rather than
+// arriving by a stray keypress.
+
+/** Commands that can damage the machine, lose a print, or rewrite firmware. */
+const DANGEROUS = [
+  { re: /^M112\b/i, why: 'Emergency stop — halts the firmware until it is reset.' },
+  { re: /^M502\b/i, why: 'Resets all settings to factory defaults.' },
+  { re: /^M303\b/i, why: 'PID autotune — heats the nozzle hard for several minutes.' },
+  { re: /^M997\b/i, why: 'Starts a firmware update.' },
+  { re: /^M999\b/i, why: 'Restarts the firmware after a halt.' },
+  { re: /^G29\b/i, why: 'Bed levelling probe — moves the head across the bed.' },
+  { re: /^G28\b/i, why: 'Homes the axes, which moves the head to the limits.' },
+  { re: /^M140\s*S([2-9]\d\d|1[3-9]\d)/i, why: 'A bed temperature above 120 °C.' },
+  { re: /^M104\s*S([3-9]\d\d|2[7-9]\d)/i, why: 'A nozzle temperature above 260 °C.' },
+  { re: /^M109\s*S([3-9]\d\d|2[7-9]\d)/i, why: 'A nozzle temperature above 260 °C.' },
+];
+
+function riskOf(command) {
+  return DANGEROUS.find((d) => d.re.test(command.trim())) || null;
+}
+
+app.post('/api/gcode/send', route(async (req, res) => {
+  const raw = typeof req.body?.command === 'string' ? req.body.command.trim() : '';
+
+  if (!raw) return res.status(400).json({ error: 'Type a command first.' });
+  if (raw.length > 200) return res.status(400).json({ error: 'That command is too long.' });
+  if (/[\r\n]/.test(raw)) {
+    return res.status(400).json({ error: 'Send one command at a time.' });
+  }
+
+  const snap = getSnapshot();
+  if (snap.state === 'offline') {
+    return res.status(503).json({ error: 'The printer is offline.' });
+  }
+
+  const risk = riskOf(raw);
+  if (risk && req.body?.confirmed !== true) {
+    // The UI asks, then resends with confirmed: true.
+    return res.status(409).json({ error: risk.why, needsConfirmation: true, command: raw });
+  }
+
+  await octo.sendCommand(raw);
+  logEvent(risk ? 'warn' : 'info', 'gcode_sent', `Sent: ${raw}`, { risky: Boolean(risk) });
+
+  return res.json({
+    ok: true,
+    sent: raw,
+    // OctoPrint's REST API accepts commands but does not return what the
+    // printer says back; that only comes over its push socket. Say so rather
+    // than leave an empty reply looking like a failure.
+    note: 'Sent. The printer does not reply over this API — watch the temperatures or the log for the effect.',
+  });
 }));
 
 // --- Stored files ----------------------------------------------------------

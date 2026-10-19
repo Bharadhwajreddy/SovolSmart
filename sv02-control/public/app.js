@@ -31,6 +31,22 @@
     jobElapsed: $('job-elapsed'),
     jobRemaining: $('job-remaining'),
 
+    gcodeCard: $('gcode-card'),
+    gcodeLines: $('gcode-lines'),
+    gcodeMeta: $('gcode-meta'),
+    gcodeForm: $('gcode-form'),
+    gcodeInput: $('gcode-input'),
+    gcodeSend: $('gcode-send'),
+    gcodeQuick: $('gcode-quick'),
+
+    layerCard: $('layer-card'),
+    layerCanvas: $('layer-canvas'),
+    layerOverlay: $('layer-overlay'),
+    layerMessage: $('layer-message'),
+    layerMeta: $('layer-meta'),
+    layerSlider: $('layer-slider'),
+    layerFollow: $('layer-follow'),
+
     temps: $('temps'),
     maintenance: $('maintenance'),
     fileList: $('file-list'),
@@ -40,6 +56,9 @@
     btnCancel: $('btn-cancel'),
     btnEstop: $('btn-estop'),
     btnReconnect: $('btn-reconnect'),
+    diagnostics: $('diagnostics'),
+    diagHint: $('diag-hint'),
+    diagBaud: $('diag-baud'),
 
     dropzone: $('dropzone'),
     fileInput: $('file-input'),
@@ -115,7 +134,11 @@
     if (!response.ok) {
       const err = new Error(data?.error || `Request failed (HTTP ${response.status}).`);
       err.printerOffline = Boolean(data?.printerOffline);
+      // Carried so callers can react to a specific refusal — the G-code
+      // console resends with an explicit confirmation on this one.
+      err.needsConfirmation = Boolean(data?.needsConfirmation);
       err.status = response.status;
+      err.data = data;
       throw err;
     }
     return data;
@@ -325,6 +348,19 @@
     el.stateDot.className = `dot ${snap.state}`;
     el.stateLabel.textContent = STATE_LABELS[snap.state] || snap.state;
 
+    // Stall banner — the printer says "printing" but nothing is moving.
+    if (snap.stallWatch?.stalledSince) {
+      const at = Number.isFinite(snap.stallWatch.atCompletion)
+        ? ` at ${snap.stallWatch.atCompletion.toFixed(1)}%`
+        : '';
+      const mins = snap.stallWatch.thresholdMinutes;
+      const forHowLong = mins >= 1 ? `${Math.round(mins)} minutes` : 'several seconds';
+      banner('stalled', 'warn', `No progress${at} for over ${forHowLong}. The printer may have stopped responding.`);
+    } else {
+      clearBanner('stalled');
+      state.dismissedBanners.delete('stalled');
+    }
+
     // Offline banner
     if (snap.state === 'offline') {
       banner('offline', 'danger', snap.offlineReason || 'The printer is not reachable.');
@@ -345,6 +381,8 @@
     el.jobRemaining.textContent = `Remaining ${job.printTimeLeftText || '—'}`;
 
     renderSensors(snap.sensors || []);
+    updateLayerView(snap);
+    updateGcodeView(snap);
 
     // Controls
     const printing = snap.state === 'printing';
@@ -355,7 +393,9 @@
     el.btnPause.textContent = paused ? 'Resume' : 'Pause';
     el.btnPause.classList.toggle('primary', true);
     el.btnCancel.disabled = !active;
-    el.btnReconnect.hidden = !(snap.state === 'offline' || snap.state === 'error');
+    const needsHelp = snap.state === 'offline' || snap.state === 'error';
+    el.diagnostics.hidden = !needsHelp;
+    if (needsHelp) loadDiagnostics();
 
     // Upload button
     el.btnUpload.disabled = !state.pendingFile;
@@ -559,13 +599,393 @@
     });
 
     el.btnReconnect.addEventListener('click', () => {
-      withBusy(el.btnReconnect, 'Reconnecting…', async () => {
-        await api('/api/control/reconnect', { method: 'POST' });
+      withBusy(el.btnReconnect, 'Connecting…', async () => {
+        const baudrate = el.diagBaud.value ? Number(el.diagBaud.value) : undefined;
+        await api('/api/control/reconnect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ baudrate }),
+        });
+        diagAt = 0; // re-check straight away rather than waiting out the cache
         toast('Reconnect requested.', 'ok');
         clearBanner('estop');
       });
     });
 
+  }
+
+  // --- Layer view ----------------------------------------------------------
+  //
+  // Draws the toolpath of the layer currently being printed and marks where
+  // the nozzle is. Position comes from the byte offset OctoPrint has streamed
+  // to, mapped onto the segments of that layer — no commands are sent to the
+  // printer, so watching this cannot disturb a print.
+
+  const layerView = {
+    file: null,          // file the geometry belongs to
+    data: null,          // { segments, bounds, z, total, start, end }
+    follow: true,        // track the print, or hold the layer the user picked
+    index: 0,
+    loading: false,
+    // For smoothing: OctoPrint is polled every 2.5s, but the nozzle should
+    // appear to move continuously, so its position is extrapolated between
+    // updates from the observed byte rate and corrected on each real sample.
+    filepos: 0,
+    fileposAt: 0,
+    bytesPerMs: 0,
+  };
+
+  function layerOverlay(message) {
+    el.layerMessage.textContent = message;
+    el.layerOverlay.hidden = false;
+  }
+
+  async function loadLayer(index) {
+    if (layerView.loading) return;
+    layerView.loading = true;
+    try {
+      const params = new URLSearchParams();
+      if (Number.isFinite(index)) params.set('layer', String(index));
+      const data = await api(`/api/gcode/layer?${params}`);
+
+      layerView.data = data;
+      layerView.index = data.layer;
+      el.layerSlider.max = String(Math.max(0, data.total - 1));
+      el.layerSlider.value = String(data.layer);
+      el.layerOverlay.hidden = true;
+      // Label the layer as soon as it loads. Leaving this to the next status
+      // poll made dragging the slider show the previous layer's number.
+      updateLayerMeta();
+    } catch (err) {
+      layerView.data = null;
+      layerOverlay(err.message);
+    } finally {
+      layerView.loading = false;
+    }
+  }
+
+  /** Byte offset the nozzle is estimated to be at right now. */
+  function estimatedFilepos() {
+    if (!layerView.fileposAt) return layerView.filepos;
+    const elapsed = Date.now() - layerView.fileposAt;
+    // Never run the marker past the end of the layer on a stale sample.
+    const projected = layerView.filepos + layerView.bytesPerMs * elapsed;
+    const limit = layerView.data ? layerView.data.end : Infinity;
+    return Math.min(projected, limit);
+  }
+
+  function drawLayer() {
+    const canvas = el.layerCanvas;
+    const ctx = canvas.getContext('2d');
+    const data = layerView.data;
+
+    // Match the backing store to the displayed size so lines are not blurry.
+    const rect = canvas.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const size = Math.max(1, Math.round(rect.width * dpr));
+    if (canvas.width !== size) { canvas.width = size; canvas.height = size; }
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (!data || !data.segments.length) return;
+
+    const b = data.bounds;
+    const spanX = Math.max(1, b.maxX - b.minX);
+    const spanY = Math.max(1, b.maxY - b.minY);
+    const pad = canvas.width * 0.06;
+    const scale = Math.min((canvas.width - pad * 2) / spanX, (canvas.height - pad * 2) / spanY);
+
+    const offX = (canvas.width - spanX * scale) / 2;
+    const offY = (canvas.height - spanY * scale) / 2;
+    // Y is flipped: G-code Y grows away from you, canvas Y grows downward.
+    const toX = (x) => offX + (x - b.minX) * scale;
+    const toY = (y) => canvas.height - (offY + (y - b.minY) * scale);
+
+    const head = estimatedFilepos();
+    const styles = getComputedStyle(document.body);
+    const accent = styles.getPropertyValue('--accent').trim() || '#4c8dff';
+
+    // Two passes so the printed part always sits on top of the pending part.
+    for (const pass of ['pending', 'done']) {
+      ctx.beginPath();
+      ctx.lineWidth = Math.max(1, scale * (pass === 'done' ? 0.42 : 0.34));
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = pass === 'done' ? accent : 'rgba(150,157,176,.30)';
+
+      for (const seg of data.segments) {
+        if (!seg.e) continue; // travel move, not plastic
+        const printed = seg.o <= head;
+        if ((pass === 'done') !== printed) continue;
+        ctx.moveTo(toX(seg.x1), toY(seg.y1));
+        ctx.lineTo(toX(seg.x2), toY(seg.y2));
+      }
+      ctx.stroke();
+    }
+
+    // The nozzle: the end of the last segment already streamed.
+    let nozzle = null;
+    for (const seg of data.segments) {
+      if (seg.o > head) break;
+      nozzle = seg;
+    }
+    if (nozzle) {
+      const nx = toX(nozzle.x2);
+      const ny = toY(nozzle.y2);
+      ctx.beginPath();
+      ctx.arc(nx, ny, Math.max(4, scale * 1.6), 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(242,84,75,.22)';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(nx, ny, Math.max(2, scale * 0.7), 0, Math.PI * 2);
+      ctx.fillStyle = '#f2544b';
+      ctx.fill();
+    }
+  }
+
+  /** Called on each status poll: refresh the byte-rate estimate and layer. */
+  async function updateLayerView(snap) {
+    const printing = snap.state === 'printing' || snap.state === 'paused';
+    const file = snap.job?.path || snap.job?.file;
+
+    if (!printing || !file) {
+      el.layerCard.hidden = true;
+      layerView.file = null;
+      layerView.data = null;
+      return;
+    }
+
+    el.layerCard.hidden = false;
+
+    // New file: throw away geometry from the previous print.
+    if (file !== layerView.file) {
+      layerView.file = file;
+      layerView.data = null;
+      layerView.follow = true;
+      layerOverlay('Reading the G-code…');
+      await loadLayer(undefined);
+    }
+
+    const pos = snap.job?.filepos;
+    if (Number.isFinite(pos)) {
+      const now = Date.now();
+      if (layerView.fileposAt && pos > layerView.filepos) {
+        const rate = (pos - layerView.filepos) / Math.max(1, now - layerView.fileposAt);
+        // Smoothed, so one slow poll does not make the marker lurch.
+        layerView.bytesPerMs = layerView.bytesPerMs
+          ? layerView.bytesPerMs * 0.6 + rate * 0.4
+          : rate;
+      }
+      if (snap.state === 'paused') layerView.bytesPerMs = 0;
+      layerView.filepos = pos;
+      layerView.fileposAt = now;
+    }
+
+    // Follow the print onto the next layer when it gets there.
+    if (layerView.follow && layerView.data) {
+      const { start, end } = layerView.data;
+      if (Number.isFinite(pos) && (pos < start || pos >= end)) await loadLayer(undefined);
+    }
+
+    updateLayerMeta();
+  }
+
+  function updateLayerMeta() {
+    if (!layerView.data) return;
+    const { layer, total, z } = layerView.data;
+    el.layerMeta.textContent = `layer ${layer + 1} of ${total}  ·  z ${z?.toFixed(2)} mm`;
+  }
+
+  function wireLayerView() {
+    el.layerSlider.addEventListener('input', () => {
+      layerView.follow = false;
+      el.layerFollow.classList.remove('following');
+      el.layerFollow.textContent = 'Follow print';
+      loadLayer(Number(el.layerSlider.value));
+    });
+
+    el.layerFollow.addEventListener('click', () => {
+      layerView.follow = !layerView.follow;
+      el.layerFollow.classList.toggle('following', layerView.follow);
+      el.layerFollow.textContent = layerView.follow ? 'Following' : 'Follow print';
+      if (layerView.follow) loadLayer(undefined);
+    });
+    el.layerFollow.classList.add('following');
+
+    // Redraw continuously so the nozzle glides rather than stepping once
+    // every poll. Paused when the tab is hidden, to spare the phone battery.
+    const tick = () => {
+      if (!el.layerCard.hidden && document.visibilityState === 'visible') drawLayer();
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+
+  // --- Diagnostics ---------------------------------------------------------
+  //
+  // "Offline" hides two different faults: the machine cannot see the printer,
+  // or it can see it but nothing has opened the link. They need opposite
+  // fixes, so the dashboard says which one it is rather than leaving it to
+  // guesswork.
+
+  let diagAt = 0;
+
+  async function loadDiagnostics() {
+    // Asking OctoPrint for its port list on every poll would be wasteful.
+    if (Date.now() - diagAt < 15000) return;
+    diagAt = Date.now();
+
+    try {
+      const d = await api('/api/diagnostics');
+      el.diagHint.textContent = d.hint;
+
+      // Offer the baud rates OctoPrint reports, so a wrong guess is one tap
+      // to correct rather than a trip to its settings.
+      if (d.baudrates?.length && !el.diagBaud.options.length) {
+        const auto = document.createElement('option');
+        auto.value = '';
+        auto.textContent = 'AUTO';
+        el.diagBaud.appendChild(auto);
+        for (const rate of d.baudrates) {
+          const option = document.createElement('option');
+          option.value = String(rate);
+          option.textContent = String(rate);
+          el.diagBaud.appendChild(option);
+        }
+      }
+      el.diagBaud.hidden = d.verdict === 'no-port' || d.verdict === 'no-octoprint';
+      el.btnReconnect.hidden = d.verdict === 'no-octoprint';
+    } catch {
+      el.diagHint.textContent = 'The printer is offline.';
+    }
+  }
+
+  // --- Live G-code ---------------------------------------------------------
+  //
+  // Shows the file scrolling past as the printer consumes it, with the line
+  // currently executing marked. Position comes from the same byte offset the
+  // layer view uses, so this costs one extra request per poll and nothing on
+  // the printer itself.
+
+  let gcodeBusy = false;
+
+  async function updateGcodeView(snap) {
+    const printing = snap.state === 'printing' || snap.state === 'paused';
+    if (!printing || !(snap.job?.path || snap.job?.file)) {
+      el.gcodeCard.hidden = true;
+      return;
+    }
+    el.gcodeCard.hidden = false;
+    if (gcodeBusy) return;
+
+    gcodeBusy = true;
+    try {
+      const data = await api('/api/gcode/lines');
+      renderGcodeLines(data);
+    } catch {
+      // A failure here is cosmetic; the rest of the dashboard carries on.
+    } finally {
+      gcodeBusy = false;
+    }
+  }
+
+  function renderGcodeLines(data) {
+    el.gcodeMeta.textContent = data.current
+      ? `line ${data.current.toLocaleString()} of ${data.totalLines.toLocaleString()}`
+      : '—';
+
+    el.gcodeLines.innerHTML = '';
+    let currentNode = null;
+
+    for (const line of data.lines) {
+      const li = document.createElement('li');
+      if (data.current && line.n < data.current) li.className = 'done';
+      if (line.n === data.current) { li.className = 'now'; currentNode = li; }
+
+      const n = document.createElement('span');
+      n.className = 'n';
+      n.textContent = String(line.n);
+
+      const t = document.createElement('span');
+      t.className = 't';
+      t.textContent = line.text || ' ';
+
+      li.append(n, t);
+      el.gcodeLines.appendChild(li);
+    }
+
+    // Keep the executing line in view without yanking the whole page around.
+    if (currentNode) {
+      const box = el.gcodeLines;
+      box.scrollTop = currentNode.offsetTop - box.clientHeight / 2 + currentNode.clientHeight / 2;
+    }
+  }
+
+  // --- Sending G-code ------------------------------------------------------
+
+  const QUICK_COMMANDS = [
+    { label: 'Fan on', cmd: 'M106 S255' },
+    { label: 'Fan off', cmd: 'M107' },
+    { label: 'Motors off', cmd: 'M18' },
+    { label: 'Position', cmd: 'M114' },
+    { label: 'Speed 100%', cmd: 'M220 S100' },
+  ];
+
+  async function sendGcode(command, confirmed = false) {
+    const result = await api('/api/gcode/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command, confirmed }),
+    }).catch(async (err) => {
+      // 409 with needsConfirmation means the server wants an explicit yes.
+      if (err.status === 409 && err.needsConfirmation) {
+        const ok = await confirmAction({
+          title: `Send ${command}?`,
+          body: `${err.message} Send it anyway?`,
+          confirmLabel: 'Send it',
+          cancelLabel: 'Cancel',
+        });
+        if (!ok) return null;
+        return sendGcode(command, true);
+      }
+      throw err;
+    });
+
+    if (result?.ok) {
+      toast(`Sent ${result.sent}`, 'ok');
+      loadEvents();
+    }
+    return result;
+  }
+
+  function wireGcode() {
+    el.gcodeForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const command = el.gcodeInput.value.trim();
+      if (!command) return;
+
+      el.gcodeSend.disabled = true;
+      try {
+        const result = await sendGcode(command);
+        if (result?.ok) el.gcodeInput.value = '';
+      } catch (err) {
+        toast(err.message, 'error');
+      } finally {
+        el.gcodeSend.disabled = false;
+      }
+    });
+
+    for (const { label, cmd } of QUICK_COMMANDS) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'ghost small';
+      button.textContent = label;
+      button.title = cmd;
+      button.addEventListener('click', () => {
+        el.gcodeInput.value = cmd;
+        el.gcodeInput.focus();
+      });
+      el.gcodeQuick.appendChild(button);
+    }
   }
 
   // --- Maintenance ---------------------------------------------------------
@@ -879,6 +1299,8 @@
     wireAuth();
     wireControls();
     wireUpload();
+    wireLayerView();
+    wireGcode();
     el.refreshEvents.addEventListener('click', loadEvents);
     el.refreshFiles.addEventListener('click', loadFiles);
 

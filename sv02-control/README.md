@@ -11,6 +11,13 @@ temperatures, the progress bar, and the buttons that matter.
   settable. Nothing is hardcoded: if your printer reports one hotend, you get
   one card.
 - **Progress** — filename, percentage, elapsed and remaining time.
+- **Live layer view** — the outline of the layer being printed, drawn from the
+  G-code, with the nozzle moving along it. Printed sections are highlighted,
+  pending ones dimmed. Scrub back and forth to inspect any layer.
+- **Live G-code** — the file scrolling past as the printer consumes it, with
+  the executing line marked and the upcoming lines visible.
+- **Send G-code directly** — type a command and it goes straight to the
+  printer. Risky commands ask first; every one is logged.
 - **Controls** — pause, resume, cancel (with a confirmation), and an emergency
   stop that sends `M112`.
 - **Upload and print** — drop a `.gcode` file in and it uploads and starts.
@@ -80,13 +87,13 @@ works, but an application key is safer — you can revoke it on its own.)
 ### 3. Find your phone's camera address
 
 Open **IP Webcam**, scroll to the bottom, tap **Start server**. The screen
-shows an address like `http://192.168.2.141:8080`. Paste that straight into
+shows an address like `http://192.168.1.50:8080`. Paste that straight into
 `PHONE_CAMERA_URL` — if you leave the path off, `/video` is filled in for
 you, so both of these are fine:
 
 ```
-http://192.168.2.141:8080
-http://192.168.2.141:8080/video
+http://192.168.1.50:8080
+http://192.168.1.50:8080/video
 ```
 
 Two things worth doing on the phone, or the stream will keep dropping:
@@ -161,7 +168,7 @@ sudo nano /etc/systemd/system/sv02-control.service
 ```
 
 Change `User=` and `WorkingDirectory=` to match your setup — if you cloned to
-`/home/pi/Printer` and your user is `pi`, the defaults are already right. Then:
+`/home/pi/sv02-control` and your user is `pi`, the defaults are already right. Then:
 
 ```bash
 sudo systemctl daemon-reload
@@ -253,6 +260,48 @@ sent over HTTPS.
 | `LOG_FILE` | `./data/events.log` | Where anomalies and events are logged |
 
 ---
+
+## How the layer view works
+
+The dashboard draws the toolpath of the current layer and marks where the
+nozzle is. Two things make that cheap enough to run on a Pi:
+
+**The position comes from a byte offset, not the printer.** OctoPrint reports
+`filepos` — how far through the G-code file it has streamed. Asking the printer
+directly (`M114`) would inject commands into a live print queue and can stutter
+the print. The byte offset is already in `/api/job` and costs nothing.
+
+**Geometry is parsed on demand.** Indexing walks the file once and stores only
+a byte range and entry state per layer — a few tens of kilobytes even for a
+long print. The actual toolpath for one layer is parsed by re-reading just
+that slice. A 50 MB G-code file never sits in memory.
+
+Between the 2.5-second polls the nozzle marker is extrapolated from the
+observed byte rate and corrected on each real sample, so it glides rather than
+jumping once every poll.
+
+Indexing happens once per file, on the first print after upload. On a Pi 3B
+expect a few seconds for a large file; the panel says so while it works.
+
+## Sending G-code directly
+
+The **Send G-code** box passes whatever you type to the printer. That is
+deliberately different from the maintenance buttons, which run a fixed
+allowlist, and it has a cost: anyone past the login can drive the machine.
+Three things keep that honest.
+
+Every command is written to the event log, so there is always a record of what
+was sent and when. Commands that can damage the machine, lose a print or
+rewrite firmware — `M112`, `M502`, `M303`, `M997`, `G28`, `G29`, and
+temperatures above the safe ceiling — are refused until confirmed explicitly,
+so none of them can arrive by a stray keypress. And the request is rejected if
+it contains a newline, so one box cannot become a script.
+
+One limitation worth knowing: **the printer's replies are not shown.**
+OctoPrint's REST API accepts commands but only streams responses over its push
+socket, which this app does not use. `M114` will be sent and obeyed, but its
+answer appears in OctoPrint's own terminal, not here. Watch the temperatures,
+the layer view or the log for the effect.
 
 ## How the pieces fit together
 

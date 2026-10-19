@@ -94,27 +94,47 @@ export async function proxyStream(req, res) {
  * Relay a single still frame. Used as a fallback when the continuous stream
  * will not hold, and for the reachability check on the dashboard.
  */
-export async function proxySnapshot(_req, res) {
+/**
+ * Grab one still frame as raw bytes.
+ *
+ * Shared by the snapshot route and by notifications, which attach a photo so
+ * an alert on your phone shows what the printer actually looks like.
+ *
+ * @returns {Promise<{buffer: Buffer, contentType: string}|null>} null if the
+ *   camera is unset or unreachable — callers decide whether that is fatal.
+ */
+export async function fetchSnapshot(timeoutMs = 8000) {
   const url = config.cameraSnapshotUrl || config.cameraUrl;
-  if (!url) {
-    return res.status(503).json({ error: 'PHONE_CAMERA_URL is not configured.' });
-  }
+  if (!url) return null;
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const upstream = await fetch(url, { headers: upstreamHeaders(), signal: controller.signal });
-    if (!upstream.ok) {
-      return res.status(502).json({ error: `Camera returned HTTP ${upstream.status}.` });
-    }
+    if (!upstream.ok) return null;
+
     const buffer = Buffer.from(await upstream.arrayBuffer());
-    res.setHeader('Content-Type', upstream.headers.get('content-type') || 'image/jpeg');
-    res.setHeader('Cache-Control', 'no-store');
-    return res.end(buffer);
-  } catch (err) {
-    return res.status(502).json({ error: `Cannot reach the camera: ${err.message}` });
+    // A stream URL used as a snapshot returns multipart data, not an image.
+    // Better no photo than a corrupt one attached to an alert.
+    if (buffer.length < 100 || buffer[0] !== 0xff || buffer[1] !== 0xd8) return null;
+
+    return { buffer, contentType: upstream.headers.get('content-type') || 'image/jpeg' };
+  } catch {
+    return null;
   } finally {
     clearTimeout(timer);
   }
+}
+
+export async function proxySnapshot(_req, res) {
+  if (!(config.cameraSnapshotUrl || config.cameraUrl)) {
+    return res.status(503).json({ error: 'PHONE_CAMERA_URL is not configured.' });
+  }
+  const shot = await fetchSnapshot();
+  if (!shot) return res.status(502).json({ error: 'Cannot reach the camera.' });
+
+  res.setHeader('Content-Type', shot.contentType);
+  res.setHeader('Cache-Control', 'no-store');
+  return res.end(shot.buffer);
 }

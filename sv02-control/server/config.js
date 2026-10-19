@@ -96,6 +96,12 @@ export const config = {
   ntfyTopicUrl: str('NTFY_TOPIC_URL'),
   ntfyToken: str('NTFY_TOKEN'),
 
+  // Attach a camera frame to alerts, so a notification shows the printer.
+  attachPhotos: bool('ATTACH_PHOTOS', true),
+
+  // Minutes of zero progress, mid-print, before flagging a stall. 0 disables.
+  stallMinutes: num('STALL_MINUTES', 10),
+
   tempDeviationC: num('TEMP_DEVIATION_C', 15),
   tempDeviationSeconds: num('TEMP_DEVIATION_SECONDS', 30),
   autoPauseOnAnomaly: bool('AUTO_PAUSE_ON_ANOMALY', false),

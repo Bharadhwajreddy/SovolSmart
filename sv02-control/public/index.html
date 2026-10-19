@@ -50,6 +50,22 @@
     </div>
   </section>
 
+  <!-- Layer view: the shape of the layer being printed, with the nozzle on it -->
+  <section class="card layer-card" id="layer-card" hidden>
+    <div class="row between">
+      <h3>This layer</h3>
+      <span class="layer-meta" id="layer-meta">—</span>
+    </div>
+    <div class="layer-canvas-wrap">
+      <canvas id="layer-canvas" width="600" height="600"></canvas>
+      <div class="layer-overlay" id="layer-overlay"><span class="spinner"></span><p id="layer-message">Reading the G-code…</p></div>
+    </div>
+    <div class="layer-controls">
+      <input id="layer-slider" type="range" min="0" max="0" value="0" aria-label="Layer">
+      <button id="layer-follow" class="ghost small" type="button">Following</button>
+    </div>
+  </section>
+
   <!-- Progress -->
   <section class="card" id="progress-card">
     <div class="row between">
@@ -76,7 +92,35 @@
       <button id="btn-estop" class="estop" type="button">Emergency stop</button>
     </div>
     <p class="muted small">Emergency stop sends M112. The printer halts instantly and needs a reconnect or power cycle afterwards.</p>
-    <button id="btn-reconnect" class="ghost small" type="button" hidden>Reconnect printer</button>
+    <div id="diagnostics" class="diagnostics" hidden>
+      <p id="diag-hint" class="small"></p>
+      <div class="diag-actions">
+        <select id="diag-baud" aria-label="Baud rate"></select>
+        <button id="btn-reconnect" class="ghost small" type="button">Connect printer</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Live G-code: the file scrolling past as the printer consumes it -->
+  <section class="card" id="gcode-card" hidden>
+    <div class="row between">
+      <h3>G-code</h3>
+      <span class="layer-meta" id="gcode-meta">—</span>
+    </div>
+    <ol class="gcode-lines" id="gcode-lines"></ol>
+  </section>
+
+  <!-- Send a command straight to the printer -->
+  <section class="card">
+    <h3>Send G-code</h3>
+    <form class="gcode-send" id="gcode-form">
+      <input id="gcode-input" type="text" placeholder="e.g. M106 S255" autocomplete="off"
+             autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="200">
+      <button class="primary" id="gcode-send" type="submit">Send</button>
+    </form>
+    <div class="gcode-quick" id="gcode-quick"></div>
+    <p class="muted small">Goes straight to the printer. Risky commands ask first, and every
+      one is written to the log. The printer's replies are not available over this API.</p>
   </section>
 
   <!-- Maintenance -->

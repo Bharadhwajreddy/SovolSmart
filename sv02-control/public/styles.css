@@ -244,6 +244,104 @@ h3 { font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spa
 .checkbox { display: flex; align-items: center; gap: 8px; font-size: 13.5px; cursor: pointer; }
 .checkbox input { width: 16px; height: 16px; accent-color: var(--accent); }
 
+/* --- Layer view ----------------------------------------------------------- */
+.layer-canvas-wrap {
+  position: relative;
+  background: #0c0e11;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  aspect-ratio: 1;
+}
+.layer-canvas-wrap canvas { width: 100%; height: 100%; display: block; }
+.layer-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  background: rgba(12,14,17,.92);
+  font-size: 13px;
+  color: var(--muted);
+  text-align: center;
+  padding: 20px;
+}
+.layer-meta { font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); }
+.layer-controls { display: flex; align-items: center; gap: 10px; }
+.layer-controls input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 0; }
+#layer-follow.following { border-color: var(--accent); color: var(--accent); }
+
+/* --- Diagnostics ----------------------------------------------------------- */
+.diagnostics {
+  background: rgba(245,165,36,.10);
+  border: 1px solid rgba(245,165,36,.35);
+  border-radius: 10px;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+.diagnostics p { margin: 0; color: #ffd591; line-height: 1.55; }
+.diag-actions { display: flex; gap: 8px; align-items: center; }
+.diag-actions select {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 7px 9px;
+  font-size: 13px;
+}
+
+/* --- Live G-code ----------------------------------------------------------- */
+.gcode-lines {
+  /* Positioned so a line's offsetTop is measured against this box, which is
+     what the auto-scroll centring assumes. Without it the offsets are taken
+     from some ancestor and the executing line lands at the bottom. */
+  position: relative;
+  list-style: none;
+  margin: 0;
+  padding: 10px 0;
+  background: #0c0e11;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.75;
+  max-height: 300px;
+  overflow: auto;
+}
+.gcode-lines li { display: flex; gap: 12px; padding: 0 12px; white-space: pre; }
+.gcode-lines .n {
+  color: #4e5668;
+  text-align: right;
+  min-width: 5ch;
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+.gcode-lines .t { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.gcode-lines li.done .t { color: #6f7686; }
+.gcode-lines li.now {
+  background: rgba(76,141,255,.14);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.gcode-lines li.now .t { color: var(--text); font-weight: 600; }
+.gcode-lines li.now .n { color: var(--accent); }
+
+.gcode-send { display: flex; gap: 8px; }
+.gcode-send input {
+  flex: 1;
+  min-width: 0;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 11px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 16px; /* 16px stops iOS zooming on focus */
+}
+.gcode-send input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.gcode-quick { display: flex; flex-wrap: wrap; gap: 6px; }
+
 /* --- Maintenance ---------------------------------------------------------- */
 .maintenance { display: flex; flex-wrap: wrap; gap: 8px; }
 

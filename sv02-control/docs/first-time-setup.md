@@ -20,48 +20,6 @@ skip that, nothing else will work.
 
 ---
 
-## Try it right now, with no hardware at all
-
-Before buying anything, you can run the whole dashboard on your own computer
-against a **simulated printer**. Nothing is connected; nothing can be damaged.
-It is the real app, not a mock-up — the same code that will run on the Pi.
-
-You need Node.js 18+ ([nodejs.org](https://nodejs.org)) and Git. Then:
-
-```bash
-cd sv02-control
-npm install
-```
-
-Create a `.env` file with these six lines:
-
-```
-OCTOPRINT_URL=http://localhost:5099
-OCTOPRINT_API_KEY=demo-key
-APP_PASSWORD=printer123
-PHONE_CAMERA_URL=http://localhost:5098
-SESSION_SECRET=demo-secret-abcdef0123456789abcdef01
-TRUST_PROXY_HTTPS=false
-```
-
-Then start the fake printer and fake camera, and run the app:
-
-```bash
-node test/mocks/octoprint.mjs &
-node test/mocks/camera.mjs &
-npm start
-```
-
-Open **http://localhost:8088** and log in with `printer123`. You will see a
-dual-extruder printer mid-print, and every button works. Stop it all with
-`ctrl+c` and by closing the terminal.
-
-This is worth doing first. It tells you whether you like the interface before
-you spend anything, and it means that when you do set up real hardware, you
-already know what "working" looks like.
-
----
-
 ## Step 0 — Decide which computer
 
 Something has to stay powered on next to the printer, connected by USB.
@@ -76,29 +34,6 @@ supply.
 open or sleep disabled, and installing OctoPrint on it is more work than
 flashing a card. Use one if it is what you have, or to try things out before
 buying a Pi.
-
-**An old Android phone also works**, via an app called
-[Octo4a](https://github.com/feelfreelinux/octo4a). It runs a real OctoPrint on
-the phone, connected to the printer with a USB OTG adapter, without rooting it.
-If you have a spare phone in a drawer this costs almost nothing. Two caveats:
-some phones cannot charge and use USB OTG at the same time, which matters for
-something meant to run for days, and it is a smaller community than OctoPi, so
-there is less help when something breaks.
-
-### What if you want no extra computer at all?
-
-Your SV02's mainboard is an MKS Robin Nano, which accepts an
-[MKS WiFi module](https://github.com/makerbase-mks/MKS-WIFI) — a small ESP8266
-board, around the price of a coffee, that plugs onto the board's WiFi header
-and lets you send files over WiFi from a browser or phone app.
-
-Be clear about what that does and does not get you. It gives you wireless file
-transfer and basic control. It does **not** run OctoPrint, so it does not give
-you the camera, the temperature alerts, the auto-pause, the notifications, or
-this app — all of which need a real computer running real software. There is
-no version of "smart printer with a camera and failure detection" that does not
-involve some small computer next to the printer. The WiFi module replaces the
-SD card; it does not replace the Pi.
 
 Pick one and follow the matching section in Step 2.
 
@@ -185,7 +120,7 @@ better — you can revoke just this one later without breaking anything else.)
 
 1. Install **IP Webcam** from the Play Store.
 2. Open it, scroll to the bottom, tap **Start server**.
-3. Note the address it shows, e.g. `http://192.168.2.141:8080`.
+3. Note the address it shows, e.g. `http://192.168.1.50:8080`.
 4. Prop the phone where it can see the print bed, and **keep it on a charger**.
 
 Two settings worth changing inside IP Webcam, or the stream will keep dropping:
@@ -221,12 +156,6 @@ sudo apt-get install -y nodejs
 node --version
 ```
 
-**Why the version check:** OctoPi ships as a 32-bit system even on a 64-bit
-capable Pi, and Node 22 dropped support for 32-bit ARM. Installing Node 22
-there fails, or worse, half-installs. Node 20 is the newest that runs on it,
-and this app needs 18 or above, so 20 is fine. If `node --version` prints
-nothing afterwards, that is the thing that went wrong.
-
 ---
 
 ## Step 6 — Get this app onto the machine
@@ -253,7 +182,7 @@ Fill in five things:
 | `OCTOPRINT_URL` | `http://localhost:5000` if OctoPrint is on this same machine |
 | `OCTOPRINT_API_KEY` | the key from Step 3 |
 | `APP_PASSWORD` | a password you invent, for logging into this app. Make it long |
-| `PHONE_CAMERA_URL` | the address from Step 4, e.g. `http://192.168.2.141:8080` |
+| `PHONE_CAMERA_URL` | the address from Step 4, e.g. `http://192.168.1.50:8080` |
 | `NTFY_TOPIC_URL` | `https://ntfy.sh/` plus an unguessable name, e.g. `https://ntfy.sh/sv02-k7d2m9x4` |
 
 Also generate a session secret and paste it into `SESSION_SECRET`:
@@ -284,7 +213,7 @@ OctoPrint  (http://localhost:5000)
   ✓ Connected in 141ms — OctoPrint 1.10.0
   ✓ Printer connected. Heaters reported: tool0, tool1, bed
 
-Camera  (http://192.168.2.141:8080/video)
+Camera  (http://192.168.1.50:8080/video)
   ✓ Connected in 109ms — multipart/x-mixed-replace
   ✓ Video is streaming
 ```
@@ -321,7 +250,7 @@ Step 6 exactly on a Pi with the username `pi`, that is:
 
 ```
 User=pi
-WorkingDirectory=/home/pi/sv02-control
+WorkingDirectory=/home/pi/LifeOS/printer
 ```
 
 Then:
