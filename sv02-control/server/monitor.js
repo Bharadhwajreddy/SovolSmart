@@ -2,7 +2,7 @@ import { config } from './config.js';
 import { logEvent } from './log.js';
 import * as octo from './octoprint.js';
 import * as notify from './notify.js';
-import { parseGcode, locate } from './gcode.js';
+import { parseGcode, locate } from './gcode-model.js';
 
 /**
  * Single background poller. Every browser tab reads this one cached snapshot
@@ -61,7 +61,18 @@ export function getHistory(limit = HISTORY_LIMIT) {
 const alertedSensors = new Set();
 
 /** Non-sensor alert latches. */
-const alerted = { offline: false };
+const alerted = { offline: false, stalled: false };
+
+/**
+ * Stall tracking. OctoPrint's `completion` is driven by how much G-code has
+ * actually been sent to the printer, while `printTime` is a wall clock. So
+ * time advancing while completion sits still means the printer has stopped
+ * accepting commands — a jam, a firmware hang, or a dead serial link — even
+ * though OctoPrint still reports "printing".
+ *
+ * @type {{completion: number|null, since: number|null}}
+ */
+const progress = { completion: null, since: null };
 
 let previousState = null;
 let previousFile = null;
@@ -141,6 +152,43 @@ function formatDuration(seconds) {
   if (h > 0) return `${h}h ${m}m`;
   if (m > 0) return `${m}m ${sec}s`;
   return `${sec}s`;
+}
+
+/**
+ * Watch for a print that has stopped making progress.
+ *
+ * Deliberately generous by default: a dense first layer or a long travel move
+ * can legitimately hold the percentage still for a while, and a false alarm
+ * that cries wolf is worse than a late one.
+ *
+ * @returns {string|null} a message when a stall crosses the threshold
+ */
+function checkStall(state, job, now) {
+  if (config.stallMinutes <= 0 || state !== 'printing') {
+    progress.completion = null;
+    progress.since = null;
+    alerted.stalled = false;
+    return null;
+  }
+
+  const completion = job?.progress?.completion;
+  if (!Number.isFinite(completion)) return null;
+
+  if (progress.completion === null || completion > progress.completion + 0.01) {
+    if (alerted.stalled) {
+      logEvent('info', 'stall_cleared', `Progress resumed at ${completion.toFixed(1)}%.`);
+    }
+    progress.completion = completion;
+    progress.since = now;
+    alerted.stalled = false;
+    return null;
+  }
+
+  const stalledSeconds = (now - (progress.since ?? now)) / 1000;
+  if (stalledSeconds < config.stallMinutes * 60 || alerted.stalled) return null;
+
+  alerted.stalled = true;
+  return `Still at ${completion.toFixed(1)}% after ${Math.round(stalledSeconds / 60)} minutes. The printer may have stopped responding.`;
 }
 
 /**
@@ -343,6 +391,12 @@ async function poll() {
     await handleStateChange(state, job);
     if (job?.job?.file?.name) previousFile = job.job.file.name;
 
+    const stall = checkStall(state, job, now);
+    if (stall) {
+      logEvent('warn', 'print_stalled', stall, { file: job?.job?.file?.name ?? null });
+      await notify.notifyStalled(stall);
+    }
+
     // Anomaly detection only matters mid-print; a cold printer isn't a fault.
     if (state === 'printing') {
       for (const sensor of listSensors(printer)) {
@@ -454,12 +508,21 @@ export function getSnapshot() {
     visual: visualState(job),
     job: {
       file: job?.job?.file?.name ?? null,
+      path: job?.job?.file?.path ?? job?.job?.file?.name ?? null,
+      // Byte offset OctoPrint has streamed to. This is what the layer view
+      // uses to place the nozzle, rather than interrogating the printer.
+      filepos: job?.progress?.filepos ?? null,
       completion: job?.progress?.completion ?? null,
       printTime: job?.progress?.printTime ?? null,
       printTimeLeft: job?.progress?.printTimeLeft ?? null,
       printTimeText: formatDuration(job?.progress?.printTime),
       printTimeLeftText: formatDuration(job?.progress?.printTimeLeft),
       estimatedTotal: job?.job?.estimatedPrintTime ?? null,
+    },
+    stallWatch: {
+      stalledSince: alerted.stalled && progress.since ? new Date(progress.since).toISOString() : null,
+      atCompletion: alerted.stalled ? progress.completion : null,
+      thresholdMinutes: config.stallMinutes,
     },
     anomalyWatch: {
       thresholdC: config.tempDeviationC,

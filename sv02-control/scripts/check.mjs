@@ -96,7 +96,27 @@ console.log(`\nOctoPrint  (${config.octoprintUrl})`);
     });
     if (printer.res?.status === 409) {
       bad('OctoPrint is running, but the printer is not connected to it.');
-      info('Turn the SV02 on, check the USB cable, then hit Connect in OctoPrint.');
+
+      // Separate the two faults rather than listing everything it could be.
+      const conn = await probe(`${config.octoprintUrl}/api/connection`, {
+        headers: { 'X-Api-Key': config.octoprintApiKey },
+      });
+      const data = conn.res?.ok ? await conn.res.json().catch(() => null) : null;
+      const ports = data?.options?.ports ?? [];
+
+      if (!ports.length) {
+        info('OctoPrint can see NO serial port, so the Pi is not detecting the printer at all.');
+        info('  1. Is the printer switched on?');
+        info('  2. Is the USB lead a DATA cable? Charge-only leads look identical and are');
+        info('     the most common cause of this exact symptom.');
+        info('  3. Run  ls -l /dev/ttyUSB* /dev/ttyACM*  — nothing listed confirms it.');
+        info('  4. Check the user is in the dialout group:  groups | grep dialout');
+      } else {
+        info(`OctoPrint CAN see a serial port: ${ports.join(', ')}`);
+        info('So the cable and power are fine — the link just is not open.');
+        info('  Press Connect in OctoPrint. If AUTO fails, try 115200, then 250000.');
+        info(`  Current state: ${data?.current?.state ?? 'unknown'}`);
+      }
       failures += 1;
     } else if (printer.res?.ok) {
       const data = await printer.res.json().catch(() => ({}));

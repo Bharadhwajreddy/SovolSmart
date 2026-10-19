@@ -1,6 +1,6 @@
 [Unit]
 Description=SV02 Control — remote monitoring and control for the Sovol SV02
-Documentation=https://github.com/Bharadhwajreddy/SovolSmart
+Documentation=https://github.com/Bharadhwajreddy/Printer
 # Start after the network is genuinely usable, and after OctoPrint if it is
 # on this same machine. Wants= (not Requires=) so this app still starts and
 # shows the "printer offline" state when OctoPrint is down.

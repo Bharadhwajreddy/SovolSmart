@@ -55,10 +55,23 @@
     dockFile: $('dock-file'),
     dockPct: $('dock-pct'),
     dockFill: $('dock-fill'),
+
+    gcodeCard: $('gcode-card'),
+    gcodeLines: $('gcode-lines'),
+    gcodeMeta: $('gcode-meta'),
+    gcodeForm: $('gcode-form'),
+    gcodeInput: $('gcode-input'),
+    gcodeSend: $('gcode-send'),
+    gcodeQuick: $('gcode-quick'),
+
     btnPause: $('btn-pause'),
     btnCancel: $('btn-cancel'),
     btnEstop: $('btn-estop'),
     btnReconnect: $('btn-reconnect'),
+    diagnostics: $('diagnostics'),
+    diagHint: $('diag-hint'),
+    diagBaud: $('diag-baud'),
+    diagBaudWrap: $('diag-baud-wrap'),
 
     temps: $('temps'),
     watchCode: $('watch-code'),
@@ -282,7 +295,11 @@
     if (!response.ok) {
       const err = new Error(data?.error || `Request failed (HTTP ${response.status}).`);
       err.printerOffline = Boolean(data?.printerOffline);
+      // Carried so callers can react to a specific refusal — the G-code
+      // console resends with an explicit confirmation on this one.
+      err.needsConfirmation = Boolean(data?.needsConfirmation);
       err.status = response.status;
+      err.data = data;
       throw err;
     }
     return data;
@@ -559,6 +576,19 @@
     el.stateChip.dataset.state = snap.state;
     el.stateLabel.textContent = STATE_LABELS[snap.state] || snap.state;
 
+    // Stall banner — the printer says "printing" but nothing is moving.
+    if (snap.stallWatch?.stalledSince) {
+      const at = Number.isFinite(snap.stallWatch.atCompletion)
+        ? ` at ${snap.stallWatch.atCompletion.toFixed(1)}%`
+        : '';
+      const mins = snap.stallWatch.thresholdMinutes;
+      const forHowLong = mins >= 1 ? `${Math.round(mins)} minutes` : 'several seconds';
+      banner('stalled', 'warn', `No progress${at} for over ${forHowLong}. The printer may have stopped responding.`);
+    } else {
+      clearBanner('stalled');
+      state.dismissedBanners.delete('stalled');
+    }
+
     if (snap.state === 'offline') {
       banner('offline', 'danger', snap.offlineReason || 'The printer is not reachable.');
     } else {
@@ -570,12 +600,17 @@
     renderVisualiser(snap);
     renderSensors(snap.sensors || []);
     renderExtruder(snap.sensors || []);
+    updateGcodeView(snap);
 
     const active = isPrinting();
     el.btnPause.disabled = !active;
     el.btnPause.textContent = snap.state === 'paused' ? 'Resume' : 'Pause';
     el.btnCancel.disabled = !active;
-    el.btnReconnect.hidden = !(snap.state === 'offline' || snap.state === 'error');
+    const needsHelp = snap.state === 'offline' || snap.state === 'error';
+    el.diagnostics.hidden = !needsHelp;
+    // Reconnecting cannot help when OctoPrint itself is unreachable.
+    el.btnReconnect.hidden = !needsHelp || diagVerdict === 'no-octoprint';
+    if (needsHelp) loadDiagnostics();
 
     for (const jog of $$('.jog')) jog.disabled = active || snap.state === 'offline';
     el.homeAll.disabled = active || snap.state === 'offline';
@@ -1688,8 +1723,10 @@
     });
 
     el.btnReconnect.addEventListener('click', () => {
-      withBusy(el.btnReconnect, 'Reconnecting…', async () => {
-        await post('/api/control/reconnect');
+      withBusy(el.btnReconnect, 'Connecting…', async () => {
+        const baudrate = el.diagBaud.value ? Number(el.diagBaud.value) : undefined;
+        await post('/api/control/reconnect', { baudrate });
+        diagAt = 0; // re-check straight away rather than waiting out the cache
         toast('Reconnect requested.', 'ok');
         clearBanner('estop');
       });
@@ -1854,6 +1891,176 @@
           toast(`Z ${fmtSigned(delta, 2)} mm.`, 'ok');
         });
       });
+    }
+  }
+
+  // --- Diagnostics ---------------------------------------------------------
+  //
+  // "Offline" hides two different faults: the machine cannot see the printer,
+  // or it can see it but nothing has opened the link. They need opposite
+  // fixes, so the dashboard says which one it is rather than leaving it to
+  // guesswork.
+
+  let diagAt = 0;
+  let diagVerdict = null;
+
+  async function loadDiagnostics() {
+    // Asking OctoPrint for its port list on every poll would be wasteful.
+    if (Date.now() - diagAt < 15000) return;
+    diagAt = Date.now();
+
+    try {
+      const d = await api('/api/diagnostics');
+      el.diagHint.textContent = d.hint;
+
+      // Offer the baud rates OctoPrint reports, so a wrong guess is one tap
+      // to correct rather than a trip to its settings.
+      if (d.baudrates?.length && !el.diagBaud.options.length) {
+        const auto = document.createElement('option');
+        auto.value = '';
+        auto.textContent = 'AUTO';
+        el.diagBaud.appendChild(auto);
+        for (const rate of d.baudrates) {
+          const option = document.createElement('option');
+          option.value = String(rate);
+          option.textContent = String(rate);
+          el.diagBaud.appendChild(option);
+        }
+      }
+      diagVerdict = d.verdict;
+      el.diagBaudWrap.hidden = d.verdict === 'no-port' || d.verdict === 'no-octoprint';
+      el.btnReconnect.hidden = d.verdict === 'no-octoprint';
+    } catch {
+      el.diagHint.textContent = 'The printer is offline.';
+    }
+  }
+
+  // --- Live G-code ---------------------------------------------------------
+  //
+  // Shows the file scrolling past as the printer consumes it, with the line
+  // currently executing marked. Position comes from the same byte offset the
+  // layer view uses, so this costs one extra request per poll and nothing on
+  // the printer itself.
+
+  let gcodeBusy = false;
+
+  async function updateGcodeView(snap) {
+    const printing = snap.state === 'printing' || snap.state === 'paused';
+    if (!printing || !(snap.job?.path || snap.job?.file)) {
+      el.gcodeCard.hidden = true;
+      return;
+    }
+    el.gcodeCard.hidden = false;
+    if (gcodeBusy) return;
+
+    gcodeBusy = true;
+    try {
+      const data = await api('/api/gcode/lines');
+      renderGcodeLines(data);
+    } catch {
+      // A failure here is cosmetic; the rest of the dashboard carries on.
+    } finally {
+      gcodeBusy = false;
+    }
+  }
+
+  function renderGcodeLines(data) {
+    el.gcodeMeta.textContent = data.current
+      ? `line ${data.current.toLocaleString()} of ${data.totalLines.toLocaleString()}`
+      : '—';
+
+    el.gcodeLines.innerHTML = '';
+    let currentNode = null;
+
+    for (const line of data.lines) {
+      const li = document.createElement('li');
+      if (data.current && line.n < data.current) li.className = 'done';
+      if (line.n === data.current) { li.className = 'now'; currentNode = li; }
+
+      const n = document.createElement('span');
+      n.className = 'n';
+      n.textContent = String(line.n);
+
+      const t = document.createElement('span');
+      t.className = 't';
+      t.textContent = line.text || ' ';
+
+      li.append(n, t);
+      el.gcodeLines.appendChild(li);
+    }
+
+    // Keep the executing line in view without yanking the whole page around.
+    if (currentNode) {
+      const box = el.gcodeLines;
+      box.scrollTop = currentNode.offsetTop - box.clientHeight / 2 + currentNode.clientHeight / 2;
+    }
+  }
+
+  // --- Sending G-code ------------------------------------------------------
+
+  const QUICK_COMMANDS = [
+    { label: 'Fan on', cmd: 'M106 S255' },
+    { label: 'Fan off', cmd: 'M107' },
+    { label: 'Motors off', cmd: 'M18' },
+    { label: 'Position', cmd: 'M114' },
+    { label: 'Speed 100%', cmd: 'M220 S100' },
+  ];
+
+  async function sendGcode(command, confirmed = false) {
+    const result = await api('/api/gcode/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command, confirmed }),
+    }).catch(async (err) => {
+      // 409 with needsConfirmation means the server wants an explicit yes.
+      if (err.status === 409 && err.needsConfirmation) {
+        const ok = await confirmAction({
+          title: `Send ${command}?`,
+          body: `${err.message} Send it anyway?`,
+          confirmLabel: 'Send it',
+          cancelLabel: 'Cancel',
+        });
+        if (!ok) return null;
+        return sendGcode(command, true);
+      }
+      throw err;
+    });
+
+    if (result?.ok) {
+      toast(`Sent ${result.sent}`, 'ok');
+      loadEvents();
+    }
+    return result;
+  }
+
+  function wireGcode() {
+    el.gcodeForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const command = el.gcodeInput.value.trim();
+      if (!command) return;
+
+      el.gcodeSend.disabled = true;
+      try {
+        const result = await sendGcode(command);
+        if (result?.ok) el.gcodeInput.value = '';
+      } catch (err) {
+        toast(err.message, 'error');
+      } finally {
+        el.gcodeSend.disabled = false;
+      }
+    });
+
+    for (const { label, cmd } of QUICK_COMMANDS) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'btn btn-ghost btn-sm';
+      button.textContent = label;
+      button.title = cmd;
+      button.addEventListener('click', () => {
+        el.gcodeInput.value = cmd;
+        el.gcodeInput.focus();
+      });
+      el.gcodeQuick.appendChild(button);
     }
   }
 
@@ -2201,6 +2408,7 @@
     wireUpload();
     wireChart();
     wireVisualiser();
+    wireGcode();
     el.refreshEvents.addEventListener('click', loadEvents);
     el.refreshFiles.addEventListener('click', loadFiles);
 

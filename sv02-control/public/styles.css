@@ -970,7 +970,71 @@ input[type=range]::-moz-range-thumb    { width: 14px; height: 14px; border-radiu
 .file-meta strong { font-size: 13.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .file-meta span { font: 500 11px/1.3 var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-/* --- 09 Event log --------------------------------------------------------- */
+/* --- Diagnostics ---------------------------------------------------------- */
+/* "Offline" hides two faults with opposite fixes; this strip says which. */
+.diagnostics {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 1480px;
+  margin: 12px auto 0;
+  padding: 10px 14px;
+  background: var(--warning-wash);
+  border: 1px solid #f1d9a3;
+  border-radius: var(--r);
+  color: var(--warning-ink);
+}
+.diagnostics[hidden] { display: none; }
+.diag-glyph { font: 600 12px/1 var(--mono); flex: none; }
+.diag-hint { flex: 1; min-width: 0; margin: 0; font-size: 13px; line-height: 1.55; }
+.diag-baud { display: flex; align-items: center; gap: 8px; flex: none; }
+.diag-baud[hidden] { display: none; }
+.diag-baud select { width: auto; }
+@media (max-width: 1503px) {
+  .diagnostics { margin: 12px 12px 0; }
+}
+@media (max-width: 719px) {
+  .diagnostics { flex-wrap: wrap; }
+}
+
+/* --- Live G-code ----------------------------------------------------------- */
+.mod-gcode[hidden] { display: none; }
+.gcode-lines {
+  /* Positioned so a line's offsetTop is measured against this box, which is
+     what the auto-scroll centring assumes. Without it the offsets are taken
+     from some ancestor and the executing line lands at the bottom. */
+  position: relative;
+  list-style: none;
+  margin: 0;
+  padding: 8px 0;
+  background: var(--surface-sunk);
+  font: 400 12px/1.75 var(--mono);
+  max-height: 300px;
+  overflow: auto;
+}
+.gcode-lines li { display: flex; gap: 12px; padding: 0 14px; white-space: pre; }
+.gcode-lines .n {
+  color: var(--axis);
+  text-align: right;
+  min-width: 5ch;
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+.gcode-lines .t { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; }
+.gcode-lines li.done .t { color: var(--muted); }
+.gcode-lines li.now {
+  background: rgba(42, 120, 214, .10);
+  box-shadow: inset 3px 0 0 var(--s1);
+}
+.gcode-lines li.now .t { color: var(--ink); font-weight: 600; }
+.gcode-lines li.now .n { color: var(--s1); }
+
+/* --- Send G-code ----------------------------------------------------------- */
+.gcode-send { display: flex; gap: 8px; }
+.gcode-send .input { flex: 1; min-width: 0; }
+.gcode-quick { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* --- Event log ------------------------------------------------------------ */
 
 .log-list { list-style: none; margin: 0; padding: 0; max-height: 520px; overflow-y: auto; font-size: 12.5px; }
 .log-list li {
@@ -1148,22 +1212,26 @@ input[type=range]::-moz-range-thumb    { width: 14px; height: 14px; border-radiu
     grid-template-areas:
       "camera   camera"
       "viz      viz"
+      "gcode    gcode"
       "thermal  thermal"
       "chart    chart"
       "motion   extruder"
       "tune     maint"
+      "console  console"
       "files    log";
     align-items: start;
     padding: 16px;
   }
   .mod-camera   { grid-area: camera; }
   .mod-viz      { grid-area: viz; }
+  .mod-gcode    { grid-area: gcode; }
   .mod-thermal  { grid-area: thermal; }
   .mod-chart    { grid-area: chart; }
   .mod-motion   { grid-area: motion; }
   .mod-extruder { grid-area: extruder; }
   .mod-tune     { grid-area: tune; }
   .mod-maint    { grid-area: maint; }
+  .mod-console  { grid-area: console; }
   .mod-files    { grid-area: files; }
   .mod-log      { grid-area: log; }
   .heater-grid  { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -1178,8 +1246,10 @@ input[type=range]::-moz-range-thumb    { width: 14px; height: 14px; border-radiu
       "camera  thermal"
       "camera  chart"
       "viz     viz"
+      "gcode   gcode"
       "motion  extruder"
       "tune    maint"
+      "console console"
       "files   log";
   }
   /* The optics column spans two telemetry rows; let the viewfinder absorb

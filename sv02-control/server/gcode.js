@@ -1,267 +1,371 @@
-/**
- * A small G-code reader for the print visualiser.
- *
- * This exists so the dashboard can show *what the printer is actually doing*
- * when the camera is unavailable: which layer is being printed, its shape, and
- * where the nozzle is. Every number it draws comes from the real sliced file
- * and OctoPrint's real byte position in that file — nothing is simulated.
- *
- * The key idea: OctoPrint reports `job.progress.filepos`, the byte offset it
- * has reached in the G-code. If we record the byte range each layer occupies
- * while parsing, that offset maps straight back to a layer and to a position
- * along that layer's path.
- *
- * Deliberately not a full G-code interpreter:
- *  - G0/G1 linear moves, G2/G3 arcs drawn as their chord (documented, minor
- *    visual difference on rounded parts only).
- *  - G90/G91 and M82/M83 positioning modes, and G92 position resets.
- *  - Only extruding moves become geometry; travel moves just break the path.
- *  - Arcs, splines, and anything exotic are approximated or skipped rather
- *    than failing the parse: a partial picture beats no picture.
- */
+import fs from 'node:fs';
+import path from 'node:path';
+import { pipeline } from 'node:stream/promises';
+import { Readable } from 'node:stream';
+import readline from 'node:readline';
 
-/** Bytes above this are refused outright — a Pi 3B has 1 GB of RAM. */
-export const MAX_PARSE_BYTES = 25 * 1024 * 1024;
-
-const PARAM = /([XYZEF])(-?\d*\.?\d+)/g;
+import { config } from './config.js';
+import { logEvent } from './log.js';
 
 /**
- * Parse sliced G-code into per-layer paths plus the byte range of each layer.
+ * Turns a G-code file into per-layer 2D toolpaths, so the dashboard can draw
+ * the shape of the layer being printed and show the nozzle moving along it.
  *
- * @param {string} text     the whole G-code file
- * @param {object} [options]
- * @param {number} [options.maxPoints] hard ceiling on retained points
- * @returns {{layers: {z:number,startByte:number,endByte:number,paths:number[][]}[],
- *            bounds: {minX:number,maxX:number,minY:number,maxY:number,minZ:number,maxZ:number},
- *            bytes:number, points:number, truncated:boolean, tolerance:number}}
+ * How the nozzle position is known without asking the printer:
+ * OctoPrint reports `filepos`, the byte offset it has streamed to. Ask the
+ * printer directly (M114) and you inject commands into a live print queue,
+ * which can stutter it. Byte offset costs nothing and is already in /api/job.
+ *
+ * Memory matters here — a Pi 3B has 1 GB shared with OctoPrint, and G-code
+ * files run to tens of megabytes. So the index holds only a byte range and
+ * entry state per layer; the geometry for one layer is parsed on demand by
+ * re-reading that slice. A 400-layer index is a few tens of kilobytes.
  */
-export function parseGcode(text, options = {}) {
-  const maxPoints = options.maxPoints ?? 60000;
-  const bytes = Buffer.byteLength(text);
 
-  // Decimation tolerance: points closer together than this are merged. It
-  // scales with file size so a 20 MB file costs about the same as a 1 MB one,
-  // both to draw and to send down a phone connection.
-  const tolerance = options.tolerance ?? Math.min(2.5, Math.max(0.12, (bytes / 1e6) * 0.22));
+const MAX_FILE_BYTES = 200 * 1024 * 1024;
 
+/** @type {Map<string, object>} cache key -> index */
+const indexes = new Map();
+const MAX_CACHED_INDEXES = 3;
+
+const cacheDir = () => path.join(path.dirname(config.logFile), 'gcode-cache');
+
+function localCopyPath(filePath) {
+  // Flatten so a nested G-code path cannot escape the cache directory.
+  const safe = filePath.replace(/[^A-Za-z0-9._-]/g, '_').slice(-120);
+  return path.join(cacheDir(), safe);
+}
+
+/**
+ * Download the G-code from OctoPrint to local disk, streaming so a large file
+ * never sits in memory. Returns the local path.
+ */
+async function ensureLocalCopy(filePath) {
+  const target = localCopyPath(filePath);
+  if (fs.existsSync(target) && fs.statSync(target).size > 0) return target;
+
+  fs.mkdirSync(cacheDir(), { recursive: true });
+
+  const encoded = filePath.split('/').map(encodeURIComponent).join('/');
+  const url = `${config.octoprintUrl}/downloads/files/local/${encoded}`;
+
+  const res = await fetch(url, { headers: { 'X-Api-Key': config.octoprintApiKey } });
+  if (!res.ok) throw new Error(`Could not download the G-code from OctoPrint (HTTP ${res.status}).`);
+
+  const declared = Number(res.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > MAX_FILE_BYTES) {
+    throw new Error('That G-code file is too large to preview.');
+  }
+
+  const tmp = `${target}.partial`;
+  await pipeline(Readable.fromWeb(res.body), fs.createWriteStream(tmp));
+
+  if (fs.statSync(tmp).size > MAX_FILE_BYTES) {
+    fs.unlinkSync(tmp);
+    throw new Error('That G-code file is too large to preview.');
+  }
+
+  fs.renameSync(tmp, target);
+  return target;
+}
+
+/** Parse the numeric value of a parameter letter out of one G-code line. */
+function param(line, letter) {
+  const i = line.indexOf(letter);
+  if (i === -1) return null;
+  const value = parseFloat(line.slice(i + 1));
+  return Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Walk the whole file once, recording where each layer starts and ends and
+ * what the machine state was on entry. Only bookkeeping is kept — not the
+ * geometry, which would be far too large to hold for a whole print.
+ */
+/**
+ * How often a line-number checkpoint is recorded while indexing. Mapping a
+ * byte offset to a line number otherwise means counting from the start of the
+ * file on every poll; with checkpoints it means counting from at most this
+ * many lines back. 2000 lines of bookkeeping costs a few KB for a whole print.
+ */
+const CHECKPOINT_EVERY = 2000;
+
+async function buildIndex(localPath) {
   const layers = [];
-  const bounds = {
-    minX: Infinity, maxX: -Infinity,
-    minY: Infinity, maxY: -Infinity,
-    minZ: Infinity, maxZ: -Infinity,
-  };
+  /** @type {{line: number, byte: number}[]} sparse line-number milestones */
+  const checkpoints = [{ line: 0, byte: 0 }];
+  const bounds = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
 
+  let x = 0;
+  let y = 0;
+  let z = 0;
   let absolute = true;
-  let absoluteE = true;
-  let x = 0, y = 0, z = 0, e = 0;
-
-  let layer = null;
-  let path = null;        // the polyline currently being extruded
-  let anchorX = 0, anchorY = 0;   // last point actually kept
-  let points = 0;
-  let truncated = false;
   let offset = 0;
+  let current = null;
+  let sawMove = false;
 
-  const startLayer = (zHeight, at) => {
-    layer = { z: zHeight, startByte: at, endByte: at, paths: [] };
-    layers.push(layer);
-    path = null;
+  const stream = fs.createReadStream(localPath, { encoding: 'utf8' });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+
+  const openLayer = (atZ, startByte) => {
+    current = { z: atZ, start: startByte, end: startByte, x0: x, y0: y, absolute };
+    layers.push(current);
   };
 
-  for (const rawLine of text.split('\n')) {
-    const lineStart = offset;
-    offset += Buffer.byteLength(rawLine) + 1;
+  let lineNumber = 0;
 
-    const semi = rawLine.indexOf(';');
-    const line = (semi === -1 ? rawLine : rawLine.slice(0, semi)).trim().toUpperCase();
+  for await (const raw of rl) {
+    const lineBytes = Buffer.byteLength(raw, 'utf8') + 1; // +1 for the newline
+    const lineStart = offset;
+    offset += lineBytes;
+    lineNumber += 1;
+    if (lineNumber % CHECKPOINT_EVERY === 0) checkpoints.push({ line: lineNumber, byte: offset });
+
+    const semi = raw.indexOf(';');
+    const line = (semi === -1 ? raw : raw.slice(0, semi)).trim().toUpperCase();
     if (!line) continue;
 
-    // Positioning modes. Cheap string checks before the regex.
     if (line.startsWith('G90')) { absolute = true; continue; }
     if (line.startsWith('G91')) { absolute = false; continue; }
-    if (line.startsWith('M82')) { absoluteE = true; continue; }
-    if (line.startsWith('M83')) { absoluteE = false; continue; }
 
-    const isMove = /^G[0123](?!\d)/.test(line);
-    const isReset = /^G92(?!\d)/.test(line);
-    if (!isMove && !isReset) continue;
-
-    let nx = x, ny = y, nz = z, ne = e;
-    let sawE = false;
-    PARAM.lastIndex = 0;
-    let match = PARAM.exec(line);
-    while (match) {
-      const value = Number(match[2]);
-      if (Number.isFinite(value)) {
-        switch (match[1]) {
-          case 'X': nx = absolute || isReset ? value : x + value; break;
-          case 'Y': ny = absolute || isReset ? value : y + value; break;
-          case 'Z': nz = absolute || isReset ? value : z + value; break;
-          case 'E': ne = absoluteE || isReset ? value : e + value; sawE = true; break;
-          default: break;  // F, feedrate, does not move anything
-        }
-      }
-      match = PARAM.exec(line);
-    }
-
-    if (isReset) {
-      // G92 redefines the current position without moving.
-      x = nx; y = ny; z = nz; e = ne;
+    // G92 redefines the current position without moving.
+    if (line.startsWith('G92')) {
+      const nx = param(line, 'X'); const ny = param(line, 'Y'); const nz = param(line, 'Z');
+      if (nx !== null) x = nx;
+      if (ny !== null) y = ny;
+      if (nz !== null) z = nz;
       continue;
     }
 
-    const extruding = sawE && ne > e + 1e-6;
-    const moved = nx !== x || ny !== y;
+    const isMove = /^G[01](\s|$)/.test(line) || /^G0*[01]\s/.test(line);
+    if (!isMove) continue;
 
-    if (extruding && moved) {
-      if (!layer || nz !== layer.z) startLayer(nz, lineStart);
+    const px = param(line, 'X');
+    const py = param(line, 'Y');
+    const pz = param(line, 'Z');
 
-      if (!path) {
-        // A new path starts where the nozzle already is.
-        path = [x, y];
-        layer.paths.push(path);
-        anchorX = x;
-        anchorY = y;
-        points += 1;
-        if (bounds.minX > x) bounds.minX = x;
-        if (bounds.maxX < x) bounds.maxX = x;
-        if (bounds.minY > y) bounds.minY = y;
-        if (bounds.maxY < y) bounds.maxY = y;
-      }
+    const nextZ = pz === null ? z : (absolute ? pz : z + pz);
 
-      if (points >= maxPoints) {
-        truncated = true;
-      } else {
-        const far = Math.hypot(nx - anchorX, ny - anchorY) >= tolerance;
-        if (far) {
-          path.push(nx, ny);
-          anchorX = nx;
-          anchorY = ny;
-          points += 1;
-        } else {
-          // Merged into the anchor: overwrite the last point so the path
-          // still ends where the nozzle really is.
-          path[path.length - 2] = nx;
-          path[path.length - 1] = ny;
-        }
-      }
-
-      if (bounds.minX > nx) bounds.minX = nx;
-      if (bounds.maxX < nx) bounds.maxX = nx;
-      if (bounds.minY > ny) bounds.minY = ny;
-      if (bounds.maxY < ny) bounds.maxY = ny;
-      if (bounds.minZ > nz) bounds.minZ = nz;
-      if (bounds.maxZ < nz) bounds.maxZ = nz;
-    } else if (moved) {
-      // A travel move ends the current path.
-      path = null;
+    // A Z rise starts a new layer. Falls are ignored: a Z-hop travel move
+    // comes straight back down and must not split the layer in two.
+    if (nextZ > z + 0.0001) {
+      z = nextZ;
+      if (sawMove) openLayer(z, lineStart);
+    } else if (pz !== null) {
+      z = nextZ;
     }
 
-    if (layer) layer.endByte = offset;
-    x = nx; y = ny; z = nz; e = ne;
+    if (px !== null) x = absolute ? px : x + px;
+    if (py !== null) y = absolute ? py : y + py;
+
+    if (px !== null || py !== null) {
+      sawMove = true;
+      if (!current) openLayer(z, lineStart);
+      if (x < bounds.minX) bounds.minX = x;
+      if (x > bounds.maxX) bounds.maxX = x;
+      if (y < bounds.minY) bounds.minY = y;
+      if (y > bounds.maxY) bounds.maxY = y;
+    }
+
+    if (current) current.end = offset;
   }
 
-  // A file with no extrusion at all (or only travels) leaves bounds at
-  // infinity; hand back something the caller can safely divide by.
-  if (!Number.isFinite(bounds.minX)) {
-    bounds.minX = 0; bounds.maxX = 0;
-    bounds.minY = 0; bounds.maxY = 0;
-    bounds.minZ = 0; bounds.maxZ = 0;
-  }
+  rl.close();
 
-  return { layers, bounds, bytes, points, truncated, tolerance };
+  if (!layers.length) throw new Error('No printable moves were found in that file.');
+  // The last layer runs to the end of the file.
+  layers[layers.length - 1].end = offset;
+
+  return { layers, bounds, bytes: offset, checkpoints, lines: lineNumber };
 }
 
 /**
- * Where is the printer, given OctoPrint's byte offset into the file?
+ * The G-code around wherever the printer currently is, with the line it is
+ * executing marked — a live view of the file as it is consumed.
  *
- * @returns {{layer:number, z:number, fraction:number, x:number|null, y:number|null}|null}
+ * Found by walking forward from the nearest checkpoint rather than from the
+ * start of the file, so the cost does not grow with how far into a long print
+ * you are.
  */
-export function locate(model, filepos) {
-  if (!model || !model.layers.length || !Number.isFinite(filepos)) return null;
+export async function linesAround(filePath, filepos, before = 14, after = 14) {
+  const index = await ensureIndexed(filePath);
+  const target = Number.isFinite(filepos) ? filepos : 0;
 
-  const layers = model.layers;
-  let index = 0;
-
-  if (filepos >= layers[layers.length - 1].endByte) {
-    index = layers.length - 1;
-  } else {
-    // Binary search for the layer whose byte range contains filepos.
-    let lo = 0;
-    let hi = layers.length - 1;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      if (filepos < layers[mid].startByte) hi = mid - 1;
-      else if (filepos >= layers[mid].endByte) lo = mid + 1;
-      else { lo = mid; break; }
-    }
-    index = Math.max(0, Math.min(layers.length - 1, lo));
+  // Nearest checkpoint at or before the target.
+  let cp = index.checkpoints[0];
+  for (const candidate of index.checkpoints) {
+    if (candidate.byte <= target) cp = candidate;
+    else break;
   }
 
-  const layer = layers[index];
-  const span = Math.max(1, layer.endByte - layer.startByte);
-  const fraction = Math.max(0, Math.min(1, (filepos - layer.startByte) / span));
-  const point = pointAlongLayer(layer, fraction);
+  const window = [];
+  let lineNumber = cp.line;
+  let offset = cp.byte;
+  let currentLine = null;
 
-  return { layer: index, z: layer.z, fraction, x: point?.x ?? null, y: point?.y ?? null };
-}
+  const stream = fs.createReadStream(index.localPath, { encoding: 'utf8', start: cp.byte });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
 
-/**
- * Walk a layer's paths by length and return the point `fraction` of the way
- * along. Byte position within a layer is a decent proxy for distance printed:
- * both grow roughly with extruded length.
- */
-export function pointAlongLayer(layer, fraction) {
-  if (!layer || !layer.paths.length) return null;
+  for await (const raw of rl) {
+    const start = offset;
+    offset += Buffer.byteLength(raw, 'utf8') + 1;
+    lineNumber += 1;
 
-  let total = 0;
-  for (const path of layer.paths) {
-    for (let i = 2; i < path.length; i += 2) {
-      total += Math.hypot(path[i] - path[i - 2], path[i + 1] - path[i - 1]);
-    }
-  }
-  if (total === 0) {
-    const first = layer.paths[0];
-    return { x: first[0], y: first[1] };
-  }
+    window.push({ n: lineNumber, text: raw.length > 120 ? `${raw.slice(0, 120)}…` : raw, start });
+    if (window.length > before + after + 1) window.shift();
 
-  let target = total * Math.max(0, Math.min(1, fraction));
-  for (const path of layer.paths) {
-    for (let i = 2; i < path.length; i += 2) {
-      const dx = path[i] - path[i - 2];
-      const dy = path[i + 1] - path[i - 1];
-      const length = Math.hypot(dx, dy);
-      if (length >= target) {
-        const t = length === 0 ? 0 : target / length;
-        return { x: path[i - 2] + dx * t, y: path[i - 1] + dy * t };
-      }
-      target -= length;
+    // The printer is inside the line whose byte range contains the offset.
+    if (currentLine === null && offset > target) {
+      currentLine = lineNumber;
+    } else if (currentLine !== null && lineNumber >= currentLine + after) {
+      // Stop only once enough of what is coming next has been collected —
+      // breaking as soon as the current line was found left it pinned to the
+      // bottom of the panel with no upcoming lines visible.
+      break;
     }
   }
 
-  const last = layer.paths[layer.paths.length - 1];
-  return { x: last[last.length - 2], y: last[last.length - 1] };
-}
+  rl.close();
 
-/**
- * Shrink the model for transport: coordinates to 0.01 mm as integers, which
- * roughly halves the JSON over a phone connection and costs nothing visually.
- */
-export function serialiseModel(model) {
   return {
-    bounds: {
-      minX: round2(model.bounds.minX), maxX: round2(model.bounds.maxX),
-      minY: round2(model.bounds.minY), maxY: round2(model.bounds.maxY),
-      minZ: round2(model.bounds.minZ), maxZ: round2(model.bounds.maxZ),
-    },
-    bytes: model.bytes,
-    points: model.points,
-    truncated: model.truncated,
-    layers: model.layers.map((layer) => ({
-      z: round2(layer.z),
-      paths: layer.paths.map((path) => path.map(round2)),
-    })),
+    current: currentLine,
+    totalLines: index.lines,
+    filepos: target,
+    lines: window,
   };
 }
 
-const round2 = (v) => Math.round(v * 100) / 100;
+/** Index a file, reusing the cached index when the same file comes back. */
+export async function ensureIndexed(filePath) {
+  const cached = indexes.get(filePath);
+  if (cached) return cached;
+
+  const localPath = await ensureLocalCopy(filePath);
+  const started = Date.now();
+  const index = await buildIndex(localPath);
+  index.localPath = localPath;
+  index.filePath = filePath;
+
+  logEvent('info', 'gcode_indexed',
+    `Indexed ${filePath}: ${index.layers.length} layers in ${Date.now() - started}ms.`);
+
+  // Keep only a few, so a Pi does not accumulate indexes for old prints.
+  if (indexes.size >= MAX_CACHED_INDEXES) {
+    indexes.delete(indexes.keys().next().value);
+  }
+  indexes.set(filePath, index);
+  return index;
+}
+
+/**
+ * Parse one layer's geometry by re-reading only its slice of the file.
+ *
+ * Each segment carries the byte offset it ends at, which is what lets the
+ * frontend decide how much of the layer has already been printed.
+ */
+export async function getLayer(filePath, layerIndex) {
+  const index = await ensureIndexed(filePath);
+  const layer = index.layers[layerIndex];
+  if (!layer) return null;
+
+  const segments = [];
+  let x = layer.x0;
+  let y = layer.y0;
+  let absolute = layer.absolute;
+  let offset = layer.start;
+
+  const stream = fs.createReadStream(layer.localPath ?? index.localPath, {
+    encoding: 'utf8',
+    start: layer.start,
+    end: Math.max(layer.start, layer.end - 1),
+  });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+
+  for await (const raw of rl) {
+    offset += Buffer.byteLength(raw, 'utf8') + 1;
+
+    const semi = raw.indexOf(';');
+    const line = (semi === -1 ? raw : raw.slice(0, semi)).trim().toUpperCase();
+    if (!line) continue;
+
+    if (line.startsWith('G90')) { absolute = true; continue; }
+    if (line.startsWith('G91')) { absolute = false; continue; }
+    if (line.startsWith('G92')) {
+      const nx = param(line, 'X'); const ny = param(line, 'Y');
+      if (nx !== null) x = nx;
+      if (ny !== null) y = ny;
+      continue;
+    }
+    if (!/^G0*[01](\s|$)/.test(line)) continue;
+
+    const px = param(line, 'X');
+    const py = param(line, 'Y');
+    if (px === null && py === null) continue;
+
+    const nx = px === null ? x : (absolute ? px : x + px);
+    const ny = py === null ? y : (absolute ? py : y + py);
+
+    // E present and positive means plastic is being laid down; without it the
+    // move is a travel, which is drawn differently (or not at all).
+    const e = param(line, 'E');
+    const extruding = e !== null && (absolute ? true : e > 0);
+
+    segments.push({
+      x1: round(x), y1: round(y), x2: round(nx), y2: round(ny),
+      e: extruding ? 1 : 0,
+      o: offset,
+    });
+
+    x = nx;
+    y = ny;
+  }
+
+  rl.close();
+
+  return {
+    layer: layerIndex,
+    z: layer.z,
+    total: index.layers.length,
+    start: layer.start,
+    end: layer.end,
+    bounds: index.bounds,
+    segments,
+  };
+}
+
+const round = (n) => Math.round(n * 100) / 100;
+
+/** Which layer contains a given byte offset. */
+export async function layerAtFilepos(filePath, filepos) {
+  const index = await ensureIndexed(filePath);
+  if (!Number.isFinite(filepos)) return 0;
+
+  // Binary search — a 1000-layer print would otherwise be scanned every poll.
+  let lo = 0;
+  let hi = index.layers.length - 1;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (index.layers[mid].start <= filepos) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+export function summary(index) {
+  return {
+    layers: index.layers.length,
+    bounds: index.bounds,
+    bytes: index.bytes,
+    heights: index.layers.map((l) => round(l.z)),
+  };
+}
+
+/** Drop cached files and indexes — used when a print ends. */
+export function clearCache() {
+  indexes.clear();
+  try {
+    fs.rmSync(cacheDir(), { recursive: true, force: true });
+  } catch {
+    // A cache we cannot clear is not worth failing over.
+  }
+}

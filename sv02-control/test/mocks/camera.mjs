@@ -3,7 +3,6 @@
  * still frame at /shot.jpg, so the relay can be tested without a phone.
  */
 import http from 'node:http';
-import { pathToFileURL } from 'node:url';
 
 /** Smallest valid JPEG (1x1). */
 const JPEG = Buffer.from(
@@ -51,6 +50,6 @@ export function start(port = 5098) {
   });
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (import.meta.url === `file://${process.argv[1]}`) {
   start().then(() => console.log('mock camera on 5098'));
 }

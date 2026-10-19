@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 
 import * as octoMock from './mocks/octoprint.mjs';
 import * as camMock from './mocks/camera.mjs';
+import * as ntfyMock from './mocks/ntfy.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BASE = 'http://localhost:8099';
@@ -72,6 +73,7 @@ console.log('Starting mocks and server…');
 
 const octoServer = await octoMock.start(5099);
 const camServer = await camMock.start(5098);
+const ntfyServer = await ntfyMock.start(5097);
 
 const server = spawn(process.execPath, ['server/index.js'], {
   cwd: ROOT,
@@ -82,12 +84,13 @@ const server = spawn(process.execPath, ['server/index.js'], {
     OCTOPRINT_API_KEY: 'test-api-key',
     APP_PASSWORD: PASSWORD,
     PHONE_CAMERA_URL: 'http://localhost:5098/video',
-    NTFY_TOPIC_URL: '',
+    NTFY_TOPIC_URL: 'http://localhost:5097/sv02-test',
     SESSION_SECRET: 'test-secret-not-for-real-use-0000',
     TRUST_PROXY_HTTPS: 'false',
     TEMP_DEVIATION_C: '15',
     TEMP_DEVIATION_SECONDS: '3',
     PROFILE_REFRESH_MS: '500',
+    STALL_MINUTES: '0.05',
     LOG_FILE: './data/test-events.log',
   },
   stdio: ['ignore', 'pipe', 'pipe'],
@@ -111,6 +114,7 @@ function shutdown(code) {
   server.kill('SIGTERM');
   octoServer.close();
   camServer.close();
+  ntfyServer.close();
   setTimeout(() => process.exit(code), 300);
 }
 
@@ -141,14 +145,14 @@ try {
   await test('a bare host is treated as the video stream', async () => {
     const { normaliseCameraUrl } = await import('../server/config.js');
     // What the IP Webcam app displays is a bare host; people paste that.
-    assert.equal(normaliseCameraUrl('http://192.168.2.141:8080'), 'http://192.168.2.141:8080/video');
-    assert.equal(normaliseCameraUrl('http://192.168.2.141:8080/'), 'http://192.168.2.141:8080/video');
+    assert.equal(normaliseCameraUrl('http://192.168.1.50:8080'), 'http://192.168.1.50:8080/video');
+    assert.equal(normaliseCameraUrl('http://192.168.1.50:8080/'), 'http://192.168.1.50:8080/video');
   });
 
   await test('an explicit camera path is left alone', async () => {
     const { normaliseCameraUrl } = await import('../server/config.js');
-    assert.equal(normaliseCameraUrl('http://192.168.2.141:8080/video'), 'http://192.168.2.141:8080/video');
-    assert.equal(normaliseCameraUrl('http://192.168.2.141:8080/videofeed'), 'http://192.168.2.141:8080/videofeed');
+    assert.equal(normaliseCameraUrl('http://192.168.1.50:8080/video'), 'http://192.168.1.50:8080/video');
+    assert.equal(normaliseCameraUrl('http://192.168.1.50:8080/videofeed'), 'http://192.168.1.50:8080/videofeed');
   });
 
   await test('an unset or unparseable camera address does not throw', async () => {
@@ -430,7 +434,7 @@ try {
   console.log('\nPrint visualiser');
 
   await test('the parser finds layers, bounds and byte ranges', async () => {
-    const { parseGcode, locate } = await import('../server/gcode.js');
+    const { parseGcode, locate } = await import('../server/gcode-model.js');
     const src = [
       'G90', 'M82',
       'G1 Z0.2 F600',
@@ -457,7 +461,7 @@ try {
   });
 
   await test('relative moves and G92 resets are followed', async () => {
-    const { parseGcode } = await import('../server/gcode.js');
+    const { parseGcode } = await import('../server/gcode-model.js');
     const src = [
       'G90', 'M83', 'G1 Z0.2',
       'G1 X10 Y10 E1',
@@ -471,7 +475,7 @@ try {
   });
 
   await test('a byte offset past the end lands on the last layer', async () => {
-    const { parseGcode, locate } = await import('../server/gcode.js');
+    const { parseGcode, locate } = await import('../server/gcode-model.js');
     const model = parseGcode('G90\nM82\nG1 Z0.2\nG1 X0 Y0 E1\nG1 X5 Y0 E2\n', { tolerance: 0.01 });
     const at = locate(model, 10_000_000);
     assert.equal(at.layer, model.layers.length - 1);
@@ -618,6 +622,256 @@ try {
     const tool0 = body.sensors.find((s) => s.key === 'tool0');
     assert.equal(tool0.alerting, false);
     assert.equal(tool0.deviatingSince, null);
+  });
+
+  console.log('\nLayer view');
+
+  await test('the G-code is indexed into the right number of layers', async () => {
+    const { status, body } = await call('/api/gcode/index');
+    assert.equal(status, 200);
+    assert.equal(body.layers, 4, 'the test file has four layers');
+    assert.deepEqual(body.heights, [0.2, 0.4, 0.6, 0.8]);
+  });
+
+  await test('the print area is measured from the toolpaths', async () => {
+    const { body } = await call('/api/gcode/index');
+    // Every shape is centred on (100,100) with a radius of 20.
+    assert.ok(body.bounds.minX >= 79 && body.bounds.minX <= 81, `minX ${body.bounds.minX}`);
+    assert.ok(body.bounds.maxX >= 119 && body.bounds.maxX <= 121, `maxX ${body.bounds.maxX}`);
+  });
+
+  await test('layer 0 is the square, with four extruding sides', async () => {
+    const { body } = await call('/api/gcode/layer?layer=0');
+    const drawn = body.segments.filter((seg) => seg.e);
+    assert.equal(drawn.length, 4, 'a square has four sides');
+    const xs = new Set(drawn.flatMap((seg) => [seg.x1, seg.x2]));
+    assert.equal(xs.size, 2, `expected 2 distinct x values, got ${[...xs]}`);
+  });
+
+  await test('layer 1 is the circle, with many short segments', async () => {
+    const { body } = await call('/api/gcode/layer?layer=1');
+    const drawn = body.segments.filter((seg) => seg.e);
+    assert.equal(drawn.length, 32, 'the circle is drawn as 32 chords');
+    assert.ok(new Set(drawn.map((seg) => seg.x2)).size > 10, 'a circle needs many distinct x values');
+  });
+
+  await test('travel moves are marked separately from extrusion', async () => {
+    const { body } = await call('/api/gcode/layer?layer=2');
+    assert.ok(body.segments.some((seg) => !seg.e), 'the move to the start is a travel');
+    assert.ok(body.segments.some((seg) => seg.e), 'the triangle itself extrudes');
+  });
+
+  await test('each segment carries the byte offset that places the nozzle', async () => {
+    const { body } = await call('/api/gcode/layer?layer=0');
+    const offsets = body.segments.map((seg) => seg.o);
+    assert.ok(offsets.every((o) => Number.isFinite(o) && o > 0));
+    assert.deepEqual(offsets, [...offsets].sort((a, b) => a - b), 'offsets must increase');
+  });
+
+  await test('the layer is located from the byte offset when none is given', async () => {
+    const { body } = await call('/api/gcode/layer');
+    const pos = octoMock.getFilepos();
+    assert.ok(body.start <= pos && pos < body.end,
+      `filepos ${pos} should fall inside layer ${body.layer} [${body.start}, ${body.end})`);
+  });
+
+  await test('following the byte offset walks the layers in order', async () => {
+    const seen = [];
+    for (const fraction of [0.1, 0.5, 0.99]) {
+      const target = Math.floor(octoMock.GCODE.length * fraction);
+      octoMock.setFilepos(target);
+      // The endpoint reads the server's cached snapshot, so wait for the poll
+      // loop to pick the new offset up rather than asserting on stale data.
+      const deadline = Date.now() + 12000;
+      while (Date.now() < deadline) {
+        const { body } = await call('/api/status');
+        if (body.job?.filepos === target) break;
+        await sleep(300);
+      }
+      const { body } = await call('/api/gcode/layer');
+      seen.push(body.layer);
+    }
+    assert.deepEqual(seen, [...seen].sort((a, b) => a - b), `layers went backwards: ${seen}`);
+    assert.ok(seen.at(-1) > seen[0], 'the layer should advance with the offset');
+  });
+
+  await test('a layer past the end of the file is refused', async () => {
+    const { status } = await call('/api/gcode/layer?layer=999');
+    assert.equal(status, 404);
+  });
+
+  console.log('\nLive G-code lines');
+
+  await test('the executing line is located from the byte offset', async () => {
+    const { status, body } = await call('/api/gcode/lines');
+    assert.equal(status, 200);
+    assert.ok(Number.isFinite(body.current), 'a current line should be identified');
+    assert.ok(body.current > 0 && body.current <= body.totalLines,
+      `line ${body.current} outside 1..${body.totalLines}`);
+  });
+
+  await test('the surrounding lines come back as context', async () => {
+    const { body } = await call('/api/gcode/lines');
+    assert.ok(body.lines.length > 3, 'expected a window of lines');
+    const numbers = body.lines.map((l) => l.n);
+    assert.deepEqual(numbers, [...numbers].sort((a, b) => a - b), 'lines must be in order');
+    assert.ok(numbers.includes(body.current), 'the window must contain the current line');
+  });
+
+  await test('the window shows what is coming, not just what has run', async () => {
+    // Mid-file, so there is room on both sides.
+    const { body } = await call(`/api/gcode/lines?filepos=${Math.floor(octoMock.GCODE.length * 0.5)}`);
+    const ahead = body.lines.filter((l) => l.n > body.current).length;
+    const behind = body.lines.filter((l) => l.n < body.current).length;
+    assert.ok(ahead > 3, `expected upcoming lines, got ${ahead}`);
+    assert.ok(behind > 3, `expected preceding lines, got ${behind}`);
+  });
+
+  await test('the line text is the actual G-code', async () => {
+    const { body } = await call('/api/gcode/lines?filepos=0');
+    const text = body.lines.map((l) => l.text).join('\n');
+    assert.match(text, /G(0|1|21|28|90)/, `expected G-code, got: ${text.slice(0, 80)}`);
+  });
+
+  await test('the line advances as the byte offset does', async () => {
+    const early = await call('/api/gcode/lines?filepos=40');
+    const later = await call('/api/gcode/lines?filepos=' + Math.floor(octoMock.GCODE.length * 0.9));
+    assert.ok(later.body.current > early.body.current,
+      `line went ${early.body.current} -> ${later.body.current}`);
+  });
+
+  console.log('\nSending G-code');
+
+  await test('an ordinary command is sent straight through', async () => {
+    const { status, body } = await post('/api/gcode/send', { command: 'M106 S128' });
+    assert.equal(status, 200);
+    const last = octoMock.received.filter((r) => r.path === '/api/printer/command').at(-1);
+    assert.deepEqual(last.body.commands, ['M106 S128']);
+    assert.ok(body.note, 'the reply should explain that the printer does not answer back');
+  });
+
+  await test('a dangerous command is refused until confirmed', async () => {
+    const { status, body } = await post('/api/gcode/send', { command: 'M112' });
+    assert.equal(status, 409);
+    assert.equal(body.needsConfirmation, true);
+    assert.match(body.error, /Emergency stop/i);
+  });
+
+  await test('confirming lets the dangerous command through', async () => {
+    const before = octoMock.received.filter((r) => r.path === '/api/printer/command').length;
+    const { status } = await post('/api/gcode/send', { command: 'M112', confirmed: true });
+    assert.equal(status, 200);
+    const after = octoMock.received.filter((r) => r.path === '/api/printer/command');
+    assert.equal(after.length, before + 1);
+    assert.deepEqual(after.at(-1).body.commands, ['M112']);
+  });
+
+  await test('every sent command is written to the log', async () => {
+    const { body } = await call('/api/events?limit=60');
+    const sent = body.events.filter((e) => e.type === 'gcode_sent');
+    assert.ok(sent.some((e) => e.message.includes('M106 S128')), 'the ordinary command was logged');
+    const risky = sent.find((e) => e.message.includes('M112'));
+    assert.ok(risky, 'the dangerous command was logged');
+    assert.equal(risky.level, 'warn', 'a dangerous command should be logged as a warning');
+  });
+
+  await test('an empty or multi-line command is rejected', async () => {
+    assert.equal((await post('/api/gcode/send', { command: '   ' })).status, 400);
+    assert.equal((await post('/api/gcode/send', { command: 'G28\nM112' })).status, 400);
+  });
+
+  await test('an over-long command is rejected', async () => {
+    const { status } = await post('/api/gcode/send', { command: 'M117 ' + 'x'.repeat(300) });
+    assert.equal(status, 400);
+  });
+
+  console.log('\nStall detection');
+
+  await test('a stalled print is reported on the status', async () => {
+    octoMock.setMode('printing');
+    await waitForState('printing');
+    const deadline = Date.now() + 15000;
+    let stalled = null;
+    while (Date.now() < deadline) {
+      const { body } = await call('/api/status');
+      if (body.stallWatch?.stalledSince) { stalled = body.stallWatch; break; }
+      await sleep(500);
+    }
+    assert.ok(stalled, 'expected stallWatch to report a stall');
+  });
+
+  await test('the stall is logged once, not every poll', async () => {
+    const { body } = await call('/api/events?limit=60');
+    // Earlier sections also hold a never-advancing print past the threshold
+    // and log stalls of their own, so count only the current print's. Events
+    // arrive newest first.
+    const started = body.events.findIndex((e) => e.type === 'print_started');
+    const current = started === -1 ? body.events : body.events.slice(0, started);
+    const stalls = current.filter((e) => e.type === 'print_stalled');
+    assert.equal(stalls.length, 1, `expected exactly one stall event, got ${stalls.length}`);
+  });
+
+  console.log('\nNotifications');
+
+  await test('an alert carries a camera photo', async () => {
+    const deadline = Date.now() + 8000;
+    let shot = null;
+    while (Date.now() < deadline) {
+      shot = ntfyMock.received.find((n) => n.bodyIsJpeg);
+      if (shot) break;
+      await sleep(300);
+    }
+    assert.ok(shot, 'expected a notification with an image body');
+    assert.equal(shot.method, 'PUT', 'an attachment must be sent as PUT');
+    assert.match(shot.contentType, /image\/jpeg/);
+    assert.ok(shot.filename, 'ntfy needs a Filename header to treat it as an attachment');
+    assert.ok(shot.messageHeader, 'the text must move to the Message header');
+    assert.ok(!/[\r\n]/.test(shot.messageHeader), 'newlines would break the header');
+  });
+
+  await test('alert text with typographic characters still sends', async () => {
+    // Every message here contains an em dash and degree signs; if any had
+    // reached a header raw, the request would have thrown instead of sending.
+    const failures = await call('/api/events?limit=80');
+    const notifyFailures = failures.body.events.filter((e) => e.type === 'notify_failed');
+    assert.equal(notifyFailures.length, 0,
+      `notifications failed: ${notifyFailures.map((e) => e.message).join('; ')}`);
+  });
+
+  console.log('\nDiagnosing an offline printer');
+
+  await test('a visible port but a closed link is named as such', async () => {
+    octoMock.setMode('disconnected');
+    octoMock.setPorts(['/dev/ttyUSB0']);
+    await waitForState('offline');
+    const { body } = await call('/api/diagnostics');
+    assert.equal(body.verdict, 'port-but-closed');
+    assert.match(body.hint, /115200/, 'should suggest the baud rates to try');
+    assert.deepEqual(body.ports, ['/dev/ttyUSB0']);
+  });
+
+  await test('no serial port at all points at the cable, not the baud rate', async () => {
+    octoMock.setPorts([]);
+    const { body } = await call('/api/diagnostics');
+    assert.equal(body.verdict, 'no-port');
+    assert.match(body.hint, /charge-only|data cable/i, 'should name the usual cause');
+    assert.ok(!/115200/.test(body.hint), 'baud rate is irrelevant when no port exists');
+  });
+
+  await test('the reconnect accepts a chosen baud rate', async () => {
+    const { status } = await post('/api/control/reconnect', { baudrate: 115200 });
+    assert.equal(status, 200);
+    const last = octoMock.received.filter((r) => r.path === '/api/connection').at(-1);
+    assert.equal(last.body.command, 'connect');
+    assert.equal(last.body.baudrate, 115200);
+  });
+
+  await test('the printer coming back is reflected', async () => {
+    octoMock.setPorts(['/dev/ttyUSB0']);
+    octoMock.setMode('printing');
+    await waitForState('printing');
+    const { body } = await call('/api/diagnostics');
+    assert.equal(body.verdict, 'connected');
   });
 
   console.log('\nOctoPrint downtime');

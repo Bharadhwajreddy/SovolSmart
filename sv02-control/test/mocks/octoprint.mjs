@@ -7,7 +7,15 @@
  * Send SIGUSR2 to toggle a thermal fault on tool0.
  */
 import http from 'node:http';
-import { pathToFileURL } from 'node:url';
+import { makeGcode } from './make-gcode.mjs';
+
+/** The file the mock pretends to be printing, served for indexing. */
+export const GCODE = makeGcode();
+
+/** How far through that file the mock claims to be. */
+let filepos = Math.floor(GCODE.length * 0.55);
+export const setFilepos = (n) => { filepos = n; };
+export const getFilepos = () => filepos;
 
 let mode = process.env.MOCK_MODE || 'printing';
 
@@ -16,25 +24,6 @@ let mode = process.env.MOCK_MODE || 'printing';
  * single heater under every tool key, so tool1 mirrors tool0 exactly.
  */
 let profile = { count: 2, sharedNozzle: false };
-
-/**
- * A tiny but genuine sliced file: four 20 mm squares stacked 0.2 mm apart,
- * with a travel move between layers. Enough for the visualiser to parse real
- * layers, byte ranges and a nozzle position.
- */
-export const GCODE = (() => {
-  const lines = ['G90', 'M82', 'G28'];
-  for (let i = 0; i < 4; i += 1) {
-    const z = (0.2 * (i + 1)).toFixed(1);
-    let e = i * 10;
-    lines.push(`G1 Z${z} F600`, 'G1 X0 Y0 F3000');
-    for (const [x, y] of [[0, 0], [20, 0], [20, 20], [0, 20], [0, 0]]) {
-      e += 1;
-      lines.push(`G1 X${x} Y${y} E${e.toFixed(3)}`);
-    }
-  }
-  return lines.join('\n') + '\n';
-})();
 
 /** Every request body the app sent, so tests can assert on what was sent. */
 export const received = [];
@@ -62,17 +51,10 @@ const printer = () => ({
 
 const job = () => ({
   job: {
-    file: { name: 'benchy_v3.gcode', path: 'benchy_v3.gcode', size: Buffer.byteLength(GCODE) },
+    file: { name: 'benchy_v3.gcode', path: 'benchy_v3.gcode', size: GCODE.length },
     estimatedPrintTime: 5400,
   },
-  progress: {
-    completion: 42.7,
-    printTime: 2310,
-    printTimeLeft: 3090,
-    // Byte offset into the file above, which is what the visualiser maps
-    // back to a layer and a nozzle position.
-    filepos: Math.round(Buffer.byteLength(GCODE) * 0.42),
-  },
+  progress: { completion: 42.7, printTime: 2310, printTimeLeft: 3090, filepos },
   state: mode === 'printing' ? 'Printing' : 'Operational',
 });
 
@@ -102,7 +84,17 @@ export function start(port = 5099) {
     // app is authenticating rather than getting lucky.
     if (!req.headers['x-api-key']) return json(403, { error: 'missing api key' });
 
+    // OctoPrint answers 409 on /api/printer when no printer is connected.
+    if (mode === 'disconnected' && url.pathname === '/api/printer') {
+      return json(409, { error: 'Printer is not operational' });
+    }
+
     if (req.method === 'GET') {
+      // OctoPrint serves the raw G-code here; the layer view downloads it.
+      if (url.pathname.startsWith('/downloads/files/local/')) {
+        res.writeHead(200, { 'Content-Type': 'text/plain', 'Content-Length': Buffer.byteLength(GCODE) });
+        return res.end(GCODE);
+      }
       if (url.pathname === '/api/printer') return json(200, printer());
       if (url.pathname === '/api/job') return json(200, job());
       if (url.pathname === '/api/version') return json(200, { server: '1.10.0' });
@@ -119,11 +111,13 @@ export function start(port = 5099) {
           },
         });
       }
-      if (url.pathname === '/api/files/local') return json(200, fileListing);
-      if (url.pathname.startsWith('/downloads/files/local/')) {
-        res.writeHead(200, { 'Content-Type': 'text/plain' });
-        return res.end(GCODE);
+      if (url.pathname === '/api/connection') {
+        return json(200, {
+          current: { state: mode === 'disconnected' ? 'Closed' : 'Operational', port: serialPorts[0] ?? null },
+          options: { ports: serialPorts, baudrates: [250000, 115200, 57600] },
+        });
       }
+      if (url.pathname === '/api/files/local') return json(200, fileListing);
       return json(404, { error: 'not found' });
     }
 
@@ -173,10 +167,14 @@ export function start(port = 5099) {
 }
 
 export const setMode = (next) => { mode = next; };
+
+/** Whether the mock pretends a serial port exists. */
+let serialPorts = ['/dev/ttyUSB0'];
+export const setPorts = (ports) => { serialPorts = ports; };
 export const getMode = () => mode;
 export const setProfile = (next) => { profile = { ...profile, ...next }; };
 
 // Allow running standalone: `node test/mocks/octoprint.mjs`
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (import.meta.url === `file://${process.argv[1]}`) {
   start().then(() => console.log('mock OctoPrint on 5099'));
 }

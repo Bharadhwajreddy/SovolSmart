@@ -79,6 +79,16 @@
     </div>
   </div>
 
+  <!-- Why the printer is offline, and the one-tap fix. Shown only when it
+       is offline or in error. -->
+  <div class="diagnostics" id="diagnostics" hidden>
+    <span class="diag-glyph" aria-hidden="true">!</span>
+    <p id="diag-hint" class="diag-hint"></p>
+    <label class="diag-baud" id="diag-baud-wrap"><span class="k">Baud</span>
+      <select id="diag-baud" class="input input-sm mono" aria-label="Baud rate"></select>
+    </label>
+  </div>
+
   <div id="banners" class="banners"></div>
 
   <nav class="tabs" role="tablist" aria-label="Sections">
@@ -182,10 +192,20 @@
       </div>
     </section>
 
-    <!-- 03 Thermal ------------------------------------------------------->
-    <section class="module mod-thermal panel active" data-panel="monitor" aria-labelledby="h-thermal">
+    <!-- 03 Live G-code --------------------------------------------------->
+    <section class="module mod-gcode panel active" data-panel="monitor" id="gcode-card" aria-labelledby="h-gcode" hidden>
       <header class="mod-head">
         <span class="mod-idx">03</span>
+        <h2 id="h-gcode">Live G-code</h2>
+        <span class="code" id="gcode-meta">—</span>
+      </header>
+      <ol class="gcode-lines" id="gcode-lines"></ol>
+    </section>
+
+    <!-- 04 Thermal ------------------------------------------------------->
+    <section class="module mod-thermal panel active" data-panel="monitor" aria-labelledby="h-thermal">
+      <header class="mod-head">
+        <span class="mod-idx">04</span>
         <h2 id="h-thermal">Thermal</h2>
         <span class="code" id="watch-code">WATCH —</span>
         <div class="mod-tools">
@@ -195,10 +215,10 @@
       <div id="temps" class="heater-grid"><p class="empty-row">Waiting for the printer…</p></div>
     </section>
 
-    <!-- 04 Temperature log ----------------------------------------------->
+    <!-- 05 Temperature log ----------------------------------------------->
     <section class="module mod-chart panel active" data-panel="monitor" aria-labelledby="h-chart">
       <header class="mod-head">
-        <span class="mod-idx">04</span>
+        <span class="mod-idx">05</span>
         <h2 id="h-chart">Temperature log</h2>
         <div class="mod-tools">
           <div class="seg" id="chart-range" role="group" aria-label="Time range">
@@ -218,10 +238,10 @@
       <div class="chart-table" id="chart-table" hidden></div>
     </section>
 
-    <!-- 05 Motion -------------------------------------------------------->
+    <!-- 06 Motion -------------------------------------------------------->
     <section class="module mod-motion panel" data-panel="motion" aria-labelledby="h-motion">
       <header class="mod-head">
-        <span class="mod-idx">05</span>
+        <span class="mod-idx">06</span>
         <h2 id="h-motion">Motion</h2>
         <span class="code">G91 relative · G90 restore</span>
       </header>
@@ -262,10 +282,10 @@
       </div>
     </section>
 
-    <!-- 06 Extrusion ----------------------------------------------------->
+    <!-- 07 Extrusion ----------------------------------------------------->
     <section class="module mod-extruder panel" data-panel="motion" aria-labelledby="h-extrude">
       <header class="mod-head">
-        <span class="mod-idx">06</span>
+        <span class="mod-idx">07</span>
         <h2 id="h-extrude">Extrusion</h2>
         <span class="code">G1 E · F300 (5 mm/s)</span>
       </header>
@@ -293,10 +313,10 @@
       </div>
     </section>
 
-    <!-- 07 Tuning -------------------------------------------------------->
+    <!-- 08 Tuning -------------------------------------------------------->
     <section class="module mod-tune panel" data-panel="tune" aria-labelledby="h-tune">
       <header class="mod-head">
-        <span class="mod-idx">07</span>
+        <span class="mod-idx">08</span>
         <h2 id="h-tune">Tuning</h2>
         <span class="code">Live · safe mid-print</span>
       </header>
@@ -351,10 +371,10 @@
       </div>
     </section>
 
-    <!-- 08 Maintenance --------------------------------------------------->
+    <!-- 09 Maintenance --------------------------------------------------->
     <section class="module mod-maint panel" data-panel="tune" aria-labelledby="h-maint">
       <header class="mod-head">
-        <span class="mod-idx">08</span>
+        <span class="mod-idx">09</span>
         <h2 id="h-maint">Maintenance</h2>
         <span class="code">Server allowlist</span>
       </header>
@@ -362,10 +382,28 @@
       <p class="mod-note pad">Auto bed level runs G28 then G29, and does nothing until a probe such as a BLTouch is fitted.</p>
     </section>
 
-    <!-- 09 Job files ----------------------------------------------------->
+    <!-- 10 Console ------------------------------------------------------->
+    <section class="module mod-console panel" data-panel="tune" aria-labelledby="h-console">
+      <header class="mod-head">
+        <span class="mod-idx">10</span>
+        <h2 id="h-console">Send G-code</h2>
+        <span class="code">Direct · logged</span>
+      </header>
+      <div class="mod-body">
+        <form class="gcode-send" id="gcode-form">
+          <input id="gcode-input" class="input mono" type="text" placeholder="e.g. M106 S255" autocomplete="off"
+                 autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="200" aria-label="G-code command">
+          <button class="btn btn-ink" id="gcode-send" type="submit">Send</button>
+        </form>
+        <div class="gcode-quick" id="gcode-quick"></div>
+      </div>
+      <p class="mod-note pad">Goes straight to the printer. Risky commands ask first, and every one is written to the log. The printer's replies are not available over this API.</p>
+    </section>
+
+    <!-- 11 Job files ----------------------------------------------------->
     <section class="module mod-files panel" data-panel="files" aria-labelledby="h-files">
       <header class="mod-head">
-        <span class="mod-idx">09</span>
+        <span class="mod-idx">11</span>
         <h2 id="h-files">Job files</h2>
         <span class="code">.gcode · .gco · .g · 250 MB</span>
       </header>
@@ -394,10 +432,10 @@
       <ul id="file-list" class="file-table"><li class="empty-row">Loading…</li></ul>
     </section>
 
-    <!-- 10 Event log ----------------------------------------------------->
+    <!-- 12 Event log ----------------------------------------------------->
     <section class="module mod-log panel" data-panel="log" aria-labelledby="h-log">
       <header class="mod-head">
-        <span class="mod-idx">10</span>
+        <span class="mod-idx">12</span>
         <h2 id="h-log">Event log</h2>
         <span class="code">Newest first</span>
         <div class="mod-tools">

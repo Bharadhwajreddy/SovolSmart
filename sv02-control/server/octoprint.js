@@ -159,7 +159,54 @@ export const sendCommand = (commands) =>
   postJson('/api/printer/command', { commands: Array.isArray(commands) ? commands : [commands] });
 
 /** Reconnect the serial link after an M112 latches the firmware into halt. */
-export const connectPrinter = () => postJson('/api/connection', { command: 'connect' });
+/**
+ * Ask OctoPrint to open the serial link. With no port or baud rate it lets
+ * OctoPrint choose, which is what the dashboard's Reconnect button does.
+ */
+export const connectPrinter = (port, baudrate) =>
+  postJson('/api/connection', {
+    command: 'connect',
+    ...(port ? { port } : {}),
+    ...(baudrate ? { baudrate: Number(baudrate) } : {}),
+  });
+
+/**
+ * What OctoPrint can see at the serial layer.
+ *
+ * This is the question that separates the two ways "printer offline" happens.
+ * If no ports are listed, the machine cannot see the printer at all — a cable
+ * that only carries power, the printer switched off, a missing driver, or the
+ * OctoPrint user not being in the dialout group. If a port IS listed but the
+ * state is closed, the hardware is fine and it is the baud rate, or simply
+ * that nothing has pressed Connect.
+ */
+export async function serialDiagnostics() {
+  const data = await getConnection();
+  const ports = data?.options?.ports ?? [];
+  const baudrates = data?.options?.baudrates ?? [];
+  const state = data?.current?.state ?? 'Unknown';
+
+  let verdict;
+  let hint;
+
+  if (!ports.length) {
+    verdict = 'no-port';
+    hint = 'OctoPrint cannot see any serial port, so the machine is not detecting the printer at all. '
+      + 'Check that the printer is switched on, and that the USB lead is a data cable — '
+      + 'charge-only leads look identical and are the most common cause. '
+      + 'Then check the OctoPrint user is in the dialout group.';
+  } else if (/operational|printing|paused/i.test(state)) {
+    verdict = 'connected';
+    hint = 'The serial link is open.';
+  } else {
+    verdict = 'port-but-closed';
+    hint = `A port is visible (${ports.join(', ')}) but nothing is connected to it. `
+      + 'Press Connect, and if AUTO fails try 115200, then 250000 — the SV02 board is '
+      + 'documented as either, so it is worth trying both.';
+  }
+
+  return { verdict, hint, state, ports, baudrates };
+}
 
 /** @param {string} tool OctoPrint tool key, e.g. 'tool0' or 'tool1'. */
 export const setToolTemp = (celsius, tool = 'tool0') =>
