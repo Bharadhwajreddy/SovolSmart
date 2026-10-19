@@ -86,7 +86,7 @@ Work backwards and fix the earliest failure:
 | `docs/` | setup guide, and the nozzle-as-probe research |
 | `server/` | the backend, including `gcode.js` for the layer and line views |
 | `public/` | the dashboard |
-| `test/` | 61 end-to-end tests, plus mock printer, camera and ntfy |
+| `test/` | 90 end-to-end tests, plus mock printer, camera and ntfy |
 | `scripts/check.mjs` | the `npm run check` connection checker |
 | `deploy/` | the systemd service file |
 | `.env.example` | every setting, explained |

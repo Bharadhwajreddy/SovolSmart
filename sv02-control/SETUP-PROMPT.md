@@ -23,7 +23,7 @@ on; IP Webcam running on my phone.
 **Facts:** Pi 3B WiFi is 2.4 GHz only. The OctoPi image is 32-bit (armv7l)
 even though the chip is 64-bit capable. The printer is dual extruder, so
 OctoPrint should report `tool0`, `tool1` and `bed`. The app is finished and
-tested — 61 tests, `npm test` — you are deploying it, not writing it.
+tested — 90 tests, `npm test` — you are deploying it, not writing it.
 
 **Rules:** never run `dd`, write to a disk, or format anything — the card is
 already flashed. Show me destructive commands first. Keep secrets in `.env`
